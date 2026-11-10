@@ -18,7 +18,8 @@ Requires Android 10+ on a 64-bit ARM phone (ARMv8.2 with dotprod — roughly 201
 ## Using it
 
 1. **Choose model** → pick a `.safetensors` file (e.g. `sd-v1-5-inpainting.safetensors`
-   or any SD 1.5 *inpainting* fine-tune). It loads automatically; the status line shows the
+   or any SD 1.5 *inpainting* fine-tune). It is copied into the app's storage once (only the
+   current model is kept, so you can delete your original afterwards) and then loads automatically; the status line shows the
    detected type, e.g. `SD 1.x Inpaint`.
 2. **Image** → open a photo. Paint over what you want changed (one finger paints, two fingers
    pan/zoom, **Brush/Eraser** toggles, **Undo / Clear / Invert**).

@@ -11,9 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelFileDescriptor
 import android.provider.MediaStore
-import android.provider.OpenableColumns
 import android.view.View
 import android.view.WindowInsets
 import android.view.WindowManager
@@ -26,6 +24,7 @@ import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 import kotlin.concurrent.thread
 import kotlin.random.Random
 
@@ -82,8 +81,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private val ui = Handler(Looper.getMainLooper())
 
-    private var modelUri: Uri? = null
-    private var modelPfd: ParcelFileDescriptor? = null
+    private var modelFile: File? = null
     private var loadedModelName: String? = null
     private var busy = false
     private var lastSeed = -1L
@@ -127,7 +125,6 @@ class MainActivity : Activity() {
         super.onDestroy()
         if (isFinishing && !busy) {
             SdNative.freeModel()
-            modelPfd?.close()
         }
     }
 
@@ -265,10 +262,9 @@ class MainActivity : Activity() {
         chkBlend.isChecked = prefs.getBoolean("blend", true)
         chkFlash.isChecked = prefs.getBoolean("flash", true)
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
-        prefs.getString("modelUri", null)?.let { s ->
-            val uri = Uri.parse(s)
-            val stillAllowed = contentResolver.persistedUriPermissions.any { it.uri == uri && it.isReadPermission }
-            if (stillAllowed) modelUri = uri
+        prefs.getString("modelPath", null)?.let { p ->
+            val f = File(p)
+            if (f.exists()) modelFile = f
         }
     }
 
@@ -290,7 +286,7 @@ class MainActivity : Activity() {
             .putBoolean("blend", chkBlend.isChecked)
             .putBoolean("flash", chkFlash.isChecked)
             .putBoolean("mmap", chkMmap.isChecked)
-            .putString("modelUri", modelUri?.toString())
+            .putString("modelPath", modelFile?.absolutePath)
             .apply()
     }
 
@@ -303,15 +299,7 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK || uri == null) return
         when (requestCode) {
             REQ_IMAGE -> openImage(uri)
-            REQ_MODEL -> {
-                try {
-                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                } catch (_: SecurityException) { }
-                modelUri = uri
-                savePrefs()
-                updateUi()
-                if (!busy) loadModel()
-            }
+            REQ_MODEL -> importModel(uri)
         }
     }
 
@@ -328,7 +316,6 @@ class MainActivity : Activity() {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
-            addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         @Suppress("DEPRECATION")
         startActivityForResult(i, REQ_MODEL)
@@ -359,40 +346,62 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun displayName(uri: Uri): String {
-        contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
-            if (c.moveToFirst()) {
-                val name = c.getString(0) ?: "model"
-                val size = if (!c.isNull(1)) c.getLong(1) else -1L
-                return if (size > 0) "$name (${"%.2f".format(size / 1_073_741_824.0)} GB)" else name
-            }
-        }
-        return uri.lastPathSegment ?: "model"
-    }
-
     // ---------------------------------------------------------------- model
 
+    private fun importModel(uri: Uri) {
+        if (busy) return
+        val (name, size) = ModelStore.queryName(this, uri)
+        appendLog("Chosen: $name" + if (size > 0) " (${ModelStore.gb(size)})" else "")
+        setBusy(true, "Copying $name into app storage…")
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        thread(name = "sd-import") {
+            try {
+                // Release the old model before deleting its file.
+                SdNative.freeModel()
+                ui.post { loadedModelName = null }
+                val file = ModelStore.import(this, uri) { copied, total ->
+                    ui.post {
+                        if (total > 0) {
+                            progress.isIndeterminate = false
+                            progress.max = 1000
+                            progress.progress = (copied * 1000 / total).toInt()
+                            txtStatus.text = "Copying model… ${ModelStore.gb(copied)} / ${ModelStore.gb(total)}"
+                        } else {
+                            txtStatus.text = "Copying model… ${ModelStore.gb(copied)}"
+                        }
+                    }
+                }
+                ui.post {
+                    modelFile = file
+                    savePrefs()
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    setBusy(false, "Model copied")
+                    loadModel()
+                }
+            } catch (t: Throwable) {
+                ui.post {
+                    window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                    setBusy(false, "Copy failed: ${t.message}")
+                }
+            }
+        }
+    }
+
     private fun loadModel() {
-        val uri = modelUri ?: run { toast("Choose a .safetensors file first"); return }
+        val file = modelFile ?: run { toast("Choose a model file first"); return }
         if (busy) return
         val threads = editThreads.text.toString().toIntOrNull() ?: 4
         val wtype = (spinWeights.selectedItem as Choice).value
         val flash = chkFlash.isChecked
         val mmap = chkMmap.isChecked
-        val name = displayName(uri)
+        val name = file.name
         setBusy(true, "Loading $name…")
         val started = System.currentTimeMillis()
         thread(name = "sd-load") {
             try {
+                ModelStore.checkFile(file)?.let { throw IllegalStateException(it) }
                 SdNative.freeModel()
-                modelPfd?.close()
-                modelPfd = null
-                val pfd = contentResolver.openFileDescriptor(uri, "r")
-                    ?: throw IllegalStateException("Can't open the model file")
-                modelPfd = pfd
-                // stable-diffusion.cpp needs a path; the fd keeps the SAF grant alive.
-                val path = "/proc/self/fd/${pfd.fd}"
-                val version = SdNative.loadModel(path, null, threads, wtype, flash, mmap)
+                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap)
                 val secs = (System.currentTimeMillis() - started) / 1000
                 ui.post {
                     loadedModelName = name
@@ -405,9 +414,9 @@ class MainActivity : Activity() {
                     updateUi()
                 }
             } catch (t: Throwable) {
-                modelPfd?.close(); modelPfd = null
                 ui.post {
                     loadedModelName = null
+                    appendLog("E ${t.message}")
                     setBusy(false, "Load failed: ${t.message}")
                     updateUi()
                 }
@@ -541,12 +550,12 @@ class MainActivity : Activity() {
         val loaded = loadedModelName != null
         txtModel.text = when {
             loaded -> "Loaded: $loadedModelName"
-            modelUri != null -> "Chosen: ${displayName(modelUri!!)} (not loaded)"
+            modelFile != null -> "Ready: ${modelFile!!.name} (${ModelStore.gb(modelFile!!.length())}, not loaded)"
             else -> "No .safetensors chosen. Use an SD 1.5 inpainting checkpoint for best results."
         }
         btnGenerate.isEnabled = !busy && loaded && canvas.image != null
         btnCancel.isEnabled = busy && loaded
-        btnLoadModel.isEnabled = !busy && modelUri != null
+        btnLoadModel.isEnabled = !busy && modelFile != null
         btnSave.isEnabled = !busy && canvas.result != null
         btnUseResult.isEnabled = !busy && canvas.result != null
         btnToggle.isEnabled = canvas.result != null
