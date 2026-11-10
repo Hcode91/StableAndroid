@@ -28,6 +28,15 @@ Requires Android 10+ on a 64-bit ARM phone (ARMv8.2 with dotprod — roughly 201
 
 You can also share an image into StableAndroid from the gallery.
 
+### Stylize tab
+
+Turns a whole photo into a cartoon / anime / video-game-character version of itself. Tap
+**Photo**, pick a **Style** (Anime, Cartoon, 3D game character, Pixel art, Chibi, Comic book),
+optionally describe the subject, and tap **Stylize**. **Denoise** controls how far it moves
+from the photo: ~0.45 keeps the likeness closely, ~0.7 is much more stylised. Press and hold
+on a result to compare with the original; **Edit in Inpaint** sends it to the Inpaint tab.
+Style models (e.g. an anime SD 1.5 checkpoint) give much stronger results than realistic ones.
+
 ### Settings worth knowing
 
 | Setting | What it does |

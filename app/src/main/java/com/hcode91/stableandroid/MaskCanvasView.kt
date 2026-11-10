@@ -35,6 +35,15 @@ class MaskCanvasView @JvmOverloads constructor(
         set(value) { field = value; invalidate() }
     var showResult = false
         set(value) { field = value; invalidate() }
+    /** When set, the view just shows this bitmap (Create tab): no mask, swipe to browse. */
+    var preview: Bitmap? = null
+        set(value) { field = value; invalidate() }
+    var previewHint = "Tap Photo to choose a picture"
+    /** Shown instead of [preview] while the user presses and holds (compare). */
+    var previewOriginal: Bitmap? = null
+    private var holdingOriginal = false
+    private val showOriginalRunnable = Runnable { holdingOriginal = true; invalidate() }
+    private val previewMatrix = Matrix()
 
     var erasing = false
     /** Brush diameter in screen pixels. */
@@ -102,6 +111,10 @@ class MaskCanvasView @JvmOverloads constructor(
                 return true
             }
         })
+
+    /** Create tab: show [preview] only. */
+    var previewMode = false
+        set(value) { field = value; invalidate() }
 
     fun setImage(bmp: Bitmap, keepMask: Boolean = false) {
         val old = mask
@@ -195,6 +208,19 @@ class MaskCanvasView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
+        if (previewMode) {
+            val p = if (holdingOriginal && previewOriginal != null) previewOriginal else preview
+            if (p == null) {
+                canvas.drawText(previewHint, width / 2f, height / 2f, hintPaint)
+            } else {
+                val fit = min(width.toFloat() / p.width, height.toFloat() / p.height)
+                previewMatrix.reset()
+                previewMatrix.postScale(fit, fit)
+                previewMatrix.postTranslate((width - p.width * fit) / 2f, (height - p.height * fit) / 2f)
+                canvas.drawBitmap(p, previewMatrix, bitmapPaint)
+            }
+            return
+        }
         val img = image
         if (img == null) {
             canvas.drawText("Tap “Image” to open a picture", width / 2f, height / 2f, hintPaint)
@@ -212,11 +238,25 @@ class MaskCanvasView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (image == null) return false
-        if (showResult) {
+        if (previewMode) {
+            if (preview == null) return false
+        } else if (image == null) return false
+        if (showResult || previewMode) {
             when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> { swipeStartX = event.x; swipeStartY = event.y }
+                MotionEvent.ACTION_DOWN -> {
+                    swipeStartX = event.x; swipeStartY = event.y
+                    if (previewMode && previewOriginal != null) postDelayed(showOriginalRunnable, 150)
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (kotlin.math.abs(event.x - swipeStartX) > 30) removeCallbacks(showOriginalRunnable)
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    removeCallbacks(showOriginalRunnable)
+                    if (holdingOriginal) { holdingOriginal = false; invalidate() }
+                }
                 MotionEvent.ACTION_UP -> {
+                    removeCallbacks(showOriginalRunnable)
+                    if (holdingOriginal) { holdingOriginal = false; invalidate() }
                     val dx = event.x - swipeStartX
                     val dy = event.y - swipeStartY
                     if (kotlin.math.abs(dx) > 100 * resources.displayMetrics.density / 2 &&

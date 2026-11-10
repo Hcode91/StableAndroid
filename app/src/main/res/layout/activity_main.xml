@@ -6,6 +6,23 @@
     android:background="#121212"
     android:orientation="vertical">
 
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#1E1E1E"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/btnTabInpaint"
+            style="@style/TabBtn"
+            android:text="Inpaint" />
+
+        <Button
+            android:id="@+id/btnTabCreate"
+            style="@style/TabBtn"
+            android:text="Stylize" />
+    </LinearLayout>
+
     <com.hcode91.stableandroid.MaskCanvasView
         android:id="@+id/canvas"
         android:layout_width="match_parent"
@@ -15,6 +32,7 @@
 
     <!-- Canvas tools -->
     <HorizontalScrollView
+        android:id="@+id/rowTools"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#1E1E1E"
@@ -38,6 +56,7 @@
     </HorizontalScrollView>
 
     <LinearLayout
+        android:id="@+id/rowBrush"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="#1E1E1E"
@@ -179,6 +198,27 @@
                 android:inputType="textMultiLine"
                 android:minLines="1" />
 
+            <!-- Stylize-only -->
+            <LinearLayout
+                android:id="@+id/rowCreate"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="bottom"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <LinearLayout style="@style/Cell" android:layout_weight="2">
+                    <TextView style="@style/Label" android:text="Style" />
+                    <Spinner android:id="@+id/spinStyle" style="@style/Spin" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnStylePhoto"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Photo" />
+            </LinearLayout>
+
             <!-- Sampling -->
             <LinearLayout
                 android:layout_width="match_parent"
@@ -195,7 +235,7 @@
                     <EditText android:id="@+id/editCfg" style="@style/Field" android:inputType="numberDecimal" android:text="7" />
                 </LinearLayout>
 
-                <LinearLayout style="@style/Cell">
+                <LinearLayout android:id="@+id/cellStrength" style="@style/Cell">
                     <TextView style="@style/Label" android:text="Denoise" />
                     <EditText android:id="@+id/editStrength" style="@style/Field" android:inputType="numberDecimal" android:text="1.0" />
                 </LinearLayout>
@@ -241,6 +281,7 @@
             </LinearLayout>
 
             <LinearLayout
+                android:id="@+id/rowInpaintSize"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
@@ -250,7 +291,7 @@
                     <Spinner android:id="@+id/spinSize" style="@style/Spin" />
                 </LinearLayout>
 
-                <LinearLayout style="@style/Cell">
+                <LinearLayout android:id="@+id/cellArea" style="@style/Cell">
                     <TextView style="@style/Label" android:text="Inpaint area" />
                     <Spinner android:id="@+id/spinArea" style="@style/Spin" />
                 </LinearLayout>
