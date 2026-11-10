@@ -165,6 +165,18 @@ class MainActivity : Activity() {
         handleIncomingIntent(intent)
     }
 
+    private var visible = false
+
+    override fun onStart() {
+        super.onStart()
+        visible = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        visible = false
+    }
+
     override fun onPause() {
         super.onPause()
         savePrefs()
@@ -649,6 +661,7 @@ class MainActivity : Activity() {
                 ui.post {
                     clearResults()
                     results += finals
+                    autoSaveIfHidden(finals)
                     resultSeeds += (0 until n).map { seed + it }
                     setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
                     showResultAt(0)
@@ -789,6 +802,7 @@ class MainActivity : Activity() {
                 ui.post {
                     clearCreateResults()
                     createResults += imgs
+                    autoSaveIfHidden(imgs)
                     createSeeds += (0 until n).map { seed + it }
                     setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
                     if (mode == 1) showResultAt(0) else updateUi()
@@ -800,6 +814,41 @@ class MainActivity : Activity() {
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
         }
+    }
+
+    private fun askNotificationPermissionOnce() {
+        if (Build.VERSION.SDK_INT < 33 || prefs.getBoolean("askedNotif", false)) return
+        prefs.edit().putBoolean("askedNotif", true).apply()
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 10)
+        }
+    }
+
+    /** If the app isn't on screen when a run finishes, save the results so they can't be lost. */
+    private fun autoSaveIfHidden(images: List<Bitmap>) {
+        if (visible || images.isEmpty()) return
+        val copies = images.map { it.copy(Bitmap.Config.ARGB_8888, false) }
+        appendLog("Finished in the background: saving ${copies.size} image(s) to Pictures/StableAndroid")
+        thread {
+            copies.forEach { try { writePng(it) } catch (_: Throwable) { }; it.recycle() }
+        }
+    }
+
+    private fun writePng(bmp: Bitmap) {
+        val resolver = applicationContext.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, "sd_${System.currentTimeMillis()}.png")
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/StableAndroid")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            ?: throw IllegalStateException("MediaStore insert failed")
+        resolver.openOutputStream(uri)?.use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+        values.clear()
+        values.put(MediaStore.Images.Media.IS_PENDING, 0)
+        resolver.update(uri, values, null, null)
     }
 
     private fun saveResult() {
@@ -828,8 +877,15 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- ui state
 
     private fun setBusy(b: Boolean, status: String) {
+        val wasBusy = busy
         busy = b
         txtStatus.text = status
+        if (b) {
+            askNotificationPermissionOnce()
+            WorkService.start(this, status)
+        } else if (wasBusy) {
+            WorkService.finish(this, status, announce = !visible)
+        }
         progress.isIndeterminate = b
         if (!b) {
             progress.isIndeterminate = false
@@ -857,6 +913,7 @@ class MainActivity : Activity() {
             val t = SdNative.lastStepTime()
             val speed = if (t > 0) " · ${"%.1f".format(t)}s/it" else ""
             txtStatus.text = imgLabel + "Step $step/$total$speed" + if (stage.isNotEmpty()) " · $stage" else ""
+            WorkService.update(this, imgLabel + "Step $step/$total$speed", step, total)
         } else if (stage.isNotEmpty() && !txtStatus.text.contains("Step ")) {
             txtStatus.text = stage
         }

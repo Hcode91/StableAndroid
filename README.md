@@ -51,6 +51,14 @@ Style models (e.g. an anime SD 1.5 checkpoint) give much stronger results than r
 Regular SD 1.5 checkpoints also work (masked img2img), but dedicated inpainting checkpoints
 blend far better.
 
+## Running in the background
+
+While a model is loading or images are generating, the app runs a foreground service with a
+progress notification, so you can switch apps or turn the screen off. A notification tells you
+when it finishes, and results that finish while the app is off-screen are also saved to
+`Pictures/StableAndroid` automatically. If your phone still stops it, set the app's battery
+usage to **Unrestricted** in Android's app settings.
+
 ## GPU (Vulkan)
 
 Under **Model → Run on** choose **GPU (Vulkan)** and tap **Load**. The log lists the devices
