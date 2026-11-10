@@ -64,7 +64,9 @@ class MainActivity : Activity() {
             "photo, realistic, 3d render"),
     )
 
-    private val computes = listOf(Choice("CPU", 0), Choice("GPU (Vulkan)", 1))
+    private val computes = listOf(
+        Choice("CPU", 0), Choice("GPU (Vulkan)", 1), Choice("GPU + CPU for VAE (encode/decode)", 2),
+    )
     private val areas = listOf(Choice("Only masked", 1), Choice("Whole image", 0))
     private val weightTypes = listOf(
         Choice("F16 (recommended)", 1), Choice("As stored in file", -1),
@@ -97,6 +99,7 @@ class MainActivity : Activity() {
     private lateinit var spinArea: Spinner
     private lateinit var spinWeights: Spinner
     private lateinit var spinCompute: Spinner
+    private lateinit var chkGpuSafe: CheckBox
     private lateinit var spinStyle: Spinner
     private lateinit var btnTabInpaint: Button
     private lateinit var btnTabCreate: Button
@@ -138,6 +141,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyGpuEnv()
         setContentView(R.layout.activity_main)
         bindViews()
         applyInsets()
@@ -148,7 +152,8 @@ class MainActivity : Activity() {
         checkGpuCrashMarker()
 
         thread {
-            val info = try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }
+            val info = (try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }) +
+                "\nGPU safe mode: " + (if (prefs.getBoolean("gpuSafe", true)) "on" else "off")
             ui.post { appendLog(info) }
         }
         handleIncomingIntent(intent)
@@ -201,6 +206,7 @@ class MainActivity : Activity() {
         spinArea = findViewById(R.id.spinArea)
         spinWeights = findViewById(R.id.spinWeights)
         spinCompute = findViewById(R.id.spinCompute)
+        chkGpuSafe = findViewById(R.id.chkGpuSafe)
         spinStyle = findViewById(R.id.spinStyle)
         btnTabInpaint = findViewById(R.id.btnTabInpaint)
         btnTabCreate = findViewById(R.id.btnTabCreate)
@@ -342,6 +348,11 @@ class MainActivity : Activity() {
         spinArea.setSelection(prefs.getInt("area", 0))
         spinWeights.setSelection(prefs.getInt("weights", 0))
         spinCompute.setSelection(prefs.getInt("compute", 0))
+        chkGpuSafe.isChecked = prefs.getBoolean("gpuSafe", true)
+        chkGpuSafe.setOnCheckedChangeListener { _, on ->
+            prefs.edit().putBoolean("gpuSafe", on).apply()
+            toast("Close and reopen the app for this to take effect")
+        }
         spinStyle.setSelection(prefs.getInt("style", 1))
         chkBlend.isChecked = prefs.getBoolean("blend", true)
         chkFlash.isChecked = prefs.getBoolean("flash", true)
@@ -517,7 +528,8 @@ class MainActivity : Activity() {
         val wtype = (spinWeights.selectedItem as Choice).value
         val flash = chkFlash.isChecked
         val mmap = chkMmap.isChecked
-        val wantGpu = (spinCompute.selectedItem as Choice).value == 1
+        val computeMode = (spinCompute.selectedItem as Choice).value
+        val wantGpu = computeMode != 0
         val name = file.name
         setBusy(true, if (wantGpu) "Loading $name on the GPU…" else "Loading $name…")
         val started = System.currentTimeMillis()
@@ -533,7 +545,8 @@ class MainActivity : Activity() {
                     ui.post { appendLog("Devices:\n" + devices.joinToString("\n") { "  " + it.replace('\t', ' ') }) }
                     val vk = devices.firstOrNull { it.startsWith("vulkan", ignoreCase = true) }
                     if (vk != null) {
-                        backend = vk.substringBefore('\t').lowercase()
+                        val dev = vk.substringBefore('\t').lowercase()
+                        backend = if (computeMode == 2) "all=$dev,vae=cpu" else dev
                         gpuName = vk.substringAfter('\t', "")
                     } else {
                         ui.post { appendLog("No usable Vulkan GPU found. Using the CPU instead.") }
@@ -642,7 +655,7 @@ class MainActivity : Activity() {
                 }
             } catch (t: Throwable) {
                 markGpuInFlight(false)
-                ui.post { setBusy(false, "Failed: ${t.message}") }
+                ui.post { setBusy(false, "Failed: ${t.message}"); pollNative(); gpuFailureHint() }
             } finally {
                 maskCopy.recycle()
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
@@ -782,7 +795,7 @@ class MainActivity : Activity() {
                 }
             } catch (t: Throwable) {
                 markGpuInFlight(false)
-                ui.post { setBusy(false, "Failed: ${t.message}") }
+                ui.post { setBusy(false, "Failed: ${t.message}"); pollNative(); gpuFailureHint() }
             } finally {
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
@@ -922,6 +935,28 @@ class MainActivity : Activity() {
             }
         }
         if (lines.isNotEmpty()) appendLog(lines.joinToString("\n"))
+    }
+
+    /**
+     * ggml reads these when it first sets up the GPU, so they must be set before any
+     * native call. "Safe mode" turns off matrix-core (cooperative matrix), integer-dot and
+     * bfloat16 shaders, which Qualcomm's stock driver often fails to build.
+     */
+    private fun applyGpuEnv() {
+        val safe = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("gpuSafe", true)
+        val flags = listOf("GGML_VK_DISABLE_COOPMAT", "GGML_VK_DISABLE_COOPMAT2",
+            "GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "GGML_VK_DISABLE_BFLOAT16")
+        try {
+            for (f in flags) {
+                if (safe) android.system.Os.setenv(f, "1", true) else android.system.Os.unsetenv(f)
+            }
+        } catch (_: Throwable) { }
+    }
+
+    private fun gpuFailureHint() {
+        if (loadedBackend == "cpu") return
+        appendLog("GPU run failed. Things to try, in order: tick 'GPU safe mode' and restart the app; " +
+            "choose 'GPU + CPU for VAE'; or switch back to CPU. Please send this log.")
     }
 
     /** Set while the GPU is in use; if the app dies meanwhile, the next launch falls back to CPU. */

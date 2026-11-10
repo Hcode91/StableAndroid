@@ -336,6 +336,14 @@
             <TextView style="@style/Label" android:text="Run on" />
             <Spinner android:id="@+id/spinCompute" style="@style/Spin" />
 
+            <CheckBox
+                android:id="@+id/chkGpuSafe"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="GPU safe mode (avoids shaders some drivers can't build; applies after restart)"
+                android:textColor="#DDDDDD" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
