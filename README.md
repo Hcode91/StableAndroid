@@ -42,9 +42,18 @@ You can also share an image into StableAndroid from the gallery.
 Regular SD 1.5 checkpoints also work (masked img2img), but dedicated inpainting checkpoints
 blend far better.
 
+## GPU (Vulkan)
+
+Under **Model → Run on** choose **GPU (Vulkan)** and tap **Load**. The log lists the devices
+found (e.g. `Vulkan0 Adreno (TM) 740`) and the status line says where the model loaded.
+The first GPU run is slower because shaders are prepared.
+
+Phone GPU drivers vary a lot. If the app closes while using the GPU, the next launch
+switches back to CPU automatically and says so in the log.
+
 ## Expectations
 
-This runs on the CPU. On a recent flagship expect very roughly 2–6 s per step at 512×512,
+On the CPU, on a recent flagship expect very roughly 2–6 s per step at 512×512,
 so a 20-step inpaint takes about one to two minutes. Keep the app in the foreground while it works
 (the screen is kept on automatically). If Android kills the app during load, pick Q8_0 or Q4_0.
 

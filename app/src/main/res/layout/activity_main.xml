@@ -292,6 +292,9 @@
                     android:text="Load" />
             </LinearLayout>
 
+            <TextView style="@style/Label" android:text="Run on" />
+            <Spinner android:id="@+id/spinCompute" style="@style/Spin" />
+
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"

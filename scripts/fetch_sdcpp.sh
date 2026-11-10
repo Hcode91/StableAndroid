@@ -1,23 +1,53 @@
 #!/usr/bin/env bash
-# Fetches stable-diffusion.cpp at a pinned commit into third_party/.
-# The upstream API changes often, so bump SDCPP_COMMIT deliberately.
+# Fetches native dependencies into third_party/:
+#  - stable-diffusion.cpp at a pinned commit (its API changes often; bump deliberately)
+#  - Vulkan-Headers (vulkan.hpp, not shipped in the NDK) and SPIRV-Headers for the GPU backend
 set -euo pipefail
 SDCPP_COMMIT="${SDCPP_COMMIT:-e1ca5e8bc7f1b5b8e2cbbbefc7fdaad1caffbd32}"
+VULKAN_SDK_TAG="${VULKAN_SDK_TAG:-vulkan-sdk-1.4.363.0}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DEST="$ROOT/third_party/stable-diffusion.cpp"
+TP="$ROOT/third_party"
+mkdir -p "$TP"
 
+# --- stable-diffusion.cpp -----------------------------------------------------
+DEST="$TP/stable-diffusion.cpp"
 if [ -d "$DEST/.git" ] && [ "$(git -C "$DEST" rev-parse HEAD)" = "$SDCPP_COMMIT" ] \
    && [ -f "$DEST/ggml/CMakeLists.txt" ]; then
   echo "stable-diffusion.cpp already at $SDCPP_COMMIT"
-  exit 0
+else
+  rm -rf "$DEST"
+  mkdir -p "$DEST"
+  git -C "$DEST" init -q
+  git -C "$DEST" remote add origin https://github.com/leejet/stable-diffusion.cpp
+  git -C "$DEST" fetch -q --depth 1 origin "$SDCPP_COMMIT"
+  git -C "$DEST" checkout -q FETCH_HEAD
+  # Only ggml is needed (skip webui, libwebp, libwebm, cutlass).
+  git -C "$DEST" submodule update -q --init --depth 1 ggml
+  echo "stable-diffusion.cpp ready at $SDCPP_COMMIT"
 fi
 
-rm -rf "$DEST"
-mkdir -p "$DEST"
-git -C "$DEST" init -q
-git -C "$DEST" remote add origin https://github.com/leejet/stable-diffusion.cpp
-git -C "$DEST" fetch -q --depth 1 origin "$SDCPP_COMMIT"
-git -C "$DEST" checkout -q FETCH_HEAD
-# Only ggml is needed (skip webui, libwebp, libwebm, cutlass).
-git -C "$DEST" submodule update -q --init --depth 1 ggml
-echo "stable-diffusion.cpp ready at $SDCPP_COMMIT"
+# --- Vulkan-Headers -----------------------------------------------------------
+VH="$TP/Vulkan-Headers"
+if [ -f "$VH/.tag" ] && [ "$(cat "$VH/.tag")" = "$VULKAN_SDK_TAG" ]; then
+  echo "Vulkan-Headers already at $VULKAN_SDK_TAG"
+else
+  rm -rf "$VH"
+  git -c advice.detachedHead=false clone -q --depth 1 --branch "$VULKAN_SDK_TAG" https://github.com/KhronosGroup/Vulkan-Headers "$VH"
+  echo "$VULKAN_SDK_TAG" > "$VH/.tag"
+  echo "Vulkan-Headers ready at $VULKAN_SDK_TAG"
+fi
+
+# --- SPIRV-Headers (installed so CMake's find_package(SPIRV-Headers CONFIG) works)
+SH_SRC="$TP/SPIRV-Headers-src"
+SH="$TP/spirv-headers"
+if [ -f "$SH/.tag" ] && [ "$(cat "$SH/.tag")" = "$VULKAN_SDK_TAG" ]; then
+  echo "SPIRV-Headers already at $VULKAN_SDK_TAG"
+else
+  rm -rf "$SH_SRC" "$SH"
+  git -c advice.detachedHead=false clone -q --depth 1 --branch "$VULKAN_SDK_TAG" https://github.com/KhronosGroup/SPIRV-Headers "$SH_SRC"
+  cmake -S "$SH_SRC" -B "$SH_SRC/build" -DCMAKE_INSTALL_PREFIX="$SH" -DSPIRV_HEADERS_ENABLE_TESTS=OFF > /dev/null
+  cmake --install "$SH_SRC/build" > /dev/null
+  rm -rf "$SH_SRC"
+  echo "$VULKAN_SDK_TAG" > "$SH/.tag"
+  echo "SPIRV-Headers ready at $VULKAN_SDK_TAG"
+fi

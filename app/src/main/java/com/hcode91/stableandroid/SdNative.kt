@@ -8,6 +8,8 @@ object SdNative {
 
     @JvmStatic external fun systemInfo(): String
     @JvmStatic external fun physicalCores(): Int
+    /** "name\tdescription" per line (e.g. CPU, Vulkan0). Touches the GPU driver. */
+    @JvmStatic external fun listDevices(): String
 
     /** Returns the detected model version, e.g. "SD 1.x Inpaint". Throws on failure. */
     @JvmStatic external fun loadModel(
@@ -17,6 +19,7 @@ object SdNative {
         weightType: Int,
         flashAttn: Boolean,
         mmap: Boolean,
+        backend: String,
     ): String
 
     @JvmStatic external fun freeModel()

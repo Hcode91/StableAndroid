@@ -25,13 +25,13 @@ jobs:
           "$SDKM" --install "ndk;28.2.13676358" "cmake;3.31.6" "platforms;android-36" "build-tools;36.0.0" > /dev/null
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
-      - name: Cache stable-diffusion.cpp source
+      - name: Cache native dependency sources
         uses: actions/cache@v4
         with:
-          path: third_party/stable-diffusion.cpp
-          key: sdcpp-${{ hashFiles('scripts/fetch_sdcpp.sh') }}
+          path: third_party
+          key: thirdparty-${{ hashFiles('scripts/fetch_sdcpp.sh') }}
 
-      - name: Fetch stable-diffusion.cpp
+      - name: Fetch stable-diffusion.cpp and Vulkan headers
         run: ./scripts/fetch_sdcpp.sh
 
       - uses: gradle/actions/setup-gradle@v4

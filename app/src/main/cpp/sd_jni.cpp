@@ -121,6 +121,17 @@ Java_com_hcode91_stableandroid_SdNative_systemInfo(JNIEnv* env, jclass) {
     return to_jstring(env, info);
 }
 
+// One "name<TAB>description" per line, e.g. "Vulkan0\tAdreno (TM) 740".
+JNIEXPORT jstring JNICALL
+Java_com_hcode91_stableandroid_SdNative_listDevices(JNIEnv* env, jclass) {
+    ensure_callbacks();
+    size_t n = sd_list_devices(nullptr, 0);
+    std::string buf(n + 1, '\0');
+    sd_list_devices(buf.data(), buf.size());
+    buf.resize(strlen(buf.c_str()));
+    return to_jstring(env, buf);
+}
+
 JNIEXPORT jint JNICALL
 Java_com_hcode91_stableandroid_SdNative_physicalCores(JNIEnv*, jclass) {
     return sd_get_num_physical_cores();
@@ -130,7 +141,7 @@ Java_com_hcode91_stableandroid_SdNative_physicalCores(JNIEnv*, jclass) {
 JNIEXPORT jstring JNICALL
 Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring jpath, jstring jvae,
                                                   jint threads, jint wtype, jboolean flashAttn,
-                                                  jboolean mmap) {
+                                                  jboolean mmap, jstring jbackend) {
     ensure_callbacks();
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (g_ctx) {
@@ -139,6 +150,7 @@ Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring j
     }
     std::string path = jstr(env, jpath);
     std::string vae = jstr(env, jvae);
+    std::string backend = jstr(env, jbackend);
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
@@ -150,8 +162,10 @@ Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring j
     p.diffusion_flash_attn = flashAttn;
     p.enable_mmap = mmap;
     p.rng_type = CUDA_RNG;  // match A1111/diffusers seeds
+    if (!backend.empty()) p.backend = backend.c_str();  // "cpu" or "vulkan0"
 
-    push_log("I loading model (" + std::to_string(p.n_threads) + " threads)");
+    push_log("I loading model (" + std::to_string(p.n_threads) + " threads, backend " +
+             (backend.empty() ? std::string("auto") : backend) + ")");
     g_ctx = new_sd_ctx(&p);
     if (!g_ctx) {
         throw_java(env, "Failed to load model. Check the log for details.");

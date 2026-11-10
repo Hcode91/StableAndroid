@@ -45,6 +45,7 @@ class MainActivity : Activity() {
         Choice("Exponential", 2), Choice("LCM", 9),
     )
     private val sizes = listOf(Choice("384", 384), Choice("512", 512), Choice("640", 640), Choice("768", 768))
+    private val computes = listOf(Choice("CPU", 0), Choice("GPU (Vulkan)", 1))
     private val areas = listOf(Choice("Only masked", 1), Choice("Whole image", 0))
     private val weightTypes = listOf(
         Choice("F16 (recommended)", 1), Choice("As stored in file", -1),
@@ -76,6 +77,8 @@ class MainActivity : Activity() {
     private lateinit var spinSize: Spinner
     private lateinit var spinArea: Spinner
     private lateinit var spinWeights: Spinner
+    private lateinit var spinCompute: Spinner
+    private var loadedBackend = "cpu"
     private lateinit var chkBlend: CheckBox
     private lateinit var chkFlash: CheckBox
     private lateinit var chkMmap: CheckBox
@@ -114,6 +117,7 @@ class MainActivity : Activity() {
         restorePrefs()
         setupListeners()
         showPreviousSession()
+        checkGpuCrashMarker()
 
         thread {
             val info = try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }
@@ -168,6 +172,7 @@ class MainActivity : Activity() {
         spinSize = findViewById(R.id.spinSize)
         spinArea = findViewById(R.id.spinArea)
         spinWeights = findViewById(R.id.spinWeights)
+        spinCompute = findViewById(R.id.spinCompute)
         chkBlend = findViewById(R.id.chkBlend)
         chkFlash = findViewById(R.id.chkFlash)
         chkMmap = findViewById(R.id.chkMmap)
@@ -203,6 +208,7 @@ class MainActivity : Activity() {
         spinSize.adapter = adapter(sizes)
         spinArea.adapter = adapter(areas)
         spinWeights.adapter = adapter(weightTypes)
+        spinCompute.adapter = adapter(computes)
     }
 
     private fun setupListeners() {
@@ -291,6 +297,7 @@ class MainActivity : Activity() {
         spinSize.setSelection(prefs.getInt("size", 1))
         spinArea.setSelection(prefs.getInt("area", 0))
         spinWeights.setSelection(prefs.getInt("weights", 0))
+        spinCompute.setSelection(prefs.getInt("compute", 0))
         chkBlend.isChecked = prefs.getBoolean("blend", true)
         chkFlash.isChecked = prefs.getBoolean("flash", true)
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
@@ -317,6 +324,7 @@ class MainActivity : Activity() {
             .putInt("size", spinSize.selectedItemPosition)
             .putInt("area", spinArea.selectedItemPosition)
             .putInt("weights", spinWeights.selectedItemPosition)
+            .putInt("compute", spinCompute.selectedItemPosition)
             .putBoolean("blend", chkBlend.isChecked)
             .putBoolean("flash", chkFlash.isChecked)
             .putBoolean("mmap", chkMmap.isChecked)
@@ -430,18 +438,36 @@ class MainActivity : Activity() {
         val wtype = (spinWeights.selectedItem as Choice).value
         val flash = chkFlash.isChecked
         val mmap = chkMmap.isChecked
+        val wantGpu = (spinCompute.selectedItem as Choice).value == 1
         val name = file.name
-        setBusy(true, "Loading $name…")
+        setBusy(true, if (wantGpu) "Loading $name on the GPU…" else "Loading $name…")
         val started = System.currentTimeMillis()
         thread(name = "sd-load") {
             try {
                 ModelStore.checkFile(file)?.let { throw IllegalStateException(it) }
                 SdNative.freeModel()
-                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap)
+                var backend = "cpu"
+                var gpuName = ""
+                if (wantGpu) {
+                    markGpuInFlight(true)
+                    val devices = SdNative.listDevices().lines().filter { it.isNotBlank() }
+                    ui.post { appendLog("Devices:\n" + devices.joinToString("\n") { "  " + it.replace('\t', ' ') }) }
+                    val vk = devices.firstOrNull { it.startsWith("vulkan", ignoreCase = true) }
+                    if (vk != null) {
+                        backend = vk.substringBefore('\t').lowercase()
+                        gpuName = vk.substringAfter('\t', "")
+                    } else {
+                        ui.post { appendLog("No usable Vulkan GPU found. Using the CPU instead.") }
+                    }
+                }
+                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap, backend)
+                markGpuInFlight(false)
+                loadedBackend = backend
                 val secs = (System.currentTimeMillis() - started) / 1000
                 ui.post {
                     loadedModelName = name
-                    setBusy(false, "Loaded $version in ${secs}s")
+                    val where = if (backend == "cpu") "CPU" else "GPU ${gpuName.ifEmpty { backend }}"
+                    setBusy(false, "Loaded $version on $where in ${secs}s")
                     if (name.contains("lcm", ignoreCase = true) && prefs.getString("autoTuned", null) != name) {
                         prefs.edit().putString("autoTuned", name).apply()
                         spinSampler.setSelection(samplers.indexOfFirst { it.label == "LCM" })
@@ -458,6 +484,7 @@ class MainActivity : Activity() {
                     updateUi()
                 }
             } catch (t: Throwable) {
+                markGpuInFlight(false)
                 ui.post {
                     loadedModelName = null
                     appendLog("E ${t.message}")
@@ -512,8 +539,10 @@ class MainActivity : Activity() {
                     appendLog("Inpainting $count× ${job.width}×${job.height} from region " +
                         "${job.region.toShortString()}, seeds $seed–${seed + count - 1}")
                 }
+                if (loadedBackend != "cpu") markGpuInFlight(true)
                 val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, prompt, negative,
                     steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling, count)
+                markGpuInFlight(false)
                 val frame = job.width * job.height * 3
                 val n = out.size / frame
                 val finals = (0 until n).map { k ->
@@ -531,6 +560,7 @@ class MainActivity : Activity() {
                     showResultAt(0)
                 }
             } catch (t: Throwable) {
+                markGpuInFlight(false)
                 ui.post { setBusy(false, "Failed: ${t.message}") }
             } finally {
                 maskCopy.recycle()
@@ -679,6 +709,20 @@ class MainActivity : Activity() {
             }
         }
         if (lines.isNotEmpty()) appendLog(lines.joinToString("\n"))
+    }
+
+    /** Set while the GPU is in use; if the app dies meanwhile, the next launch falls back to CPU. */
+    private fun markGpuInFlight(on: Boolean) {
+        prefs.edit().putBoolean("gpuInFlight", on).commit()
+    }
+
+    private fun checkGpuCrashMarker() {
+        if (!prefs.getBoolean("gpuInFlight", false)) return
+        markGpuInFlight(false)
+        spinCompute.setSelection(0)
+        prefs.edit().putInt("compute", 0).apply()
+        appendLog("The app closed while using the GPU last time, so it has been switched back to CPU. " +
+            "Copy this log and send it over; you can pick GPU again under Model → Run on.")
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()
