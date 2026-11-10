@@ -1,0 +1,333 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#121212"
+    android:orientation="vertical">
+
+    <com.hcode91.stableandroid.MaskCanvasView
+        android:id="@+id/canvas"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:background="#000000" />
+
+    <!-- Canvas tools -->
+    <HorizontalScrollView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#1E1E1E"
+        android:scrollbars="none">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="2dp">
+
+            <Button android:id="@+id/btnImage" style="@style/ToolBtn" android:text="Image" />
+            <Button android:id="@+id/btnBrush" style="@style/ToolBtn" android:text="Brush" />
+            <Button android:id="@+id/btnUndo" style="@style/ToolBtn" android:text="Undo" />
+            <Button android:id="@+id/btnClear" style="@style/ToolBtn" android:text="Clear" />
+            <Button android:id="@+id/btnInvert" style="@style/ToolBtn" android:text="Invert" />
+            <Button android:id="@+id/btnFit" style="@style/ToolBtn" android:text="Fit" />
+            <Button android:id="@+id/btnToggle" style="@style/ToolBtn" android:text="Result" />
+        </LinearLayout>
+    </HorizontalScrollView>
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#1E1E1E"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp">
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Brush"
+            android:textColor="#BBBBBB" />
+
+        <SeekBar
+            android:id="@+id/seekBrush"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:max="200"
+            android:min="8"
+            android:progress="60" />
+    </LinearLayout>
+
+    <ScrollView
+        android:id="@+id/settingsScroll"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="0.9"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="12dp">
+
+            <!-- Generate -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnGenerate"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="2"
+                    android:text="Inpaint" />
+
+                <Button
+                    android:id="@+id/btnCancel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:text="Cancel" />
+            </LinearLayout>
+
+            <ProgressBar
+                android:id="@+id/progress"
+                style="@android:style/Widget.Material.ProgressBar.Horizontal"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:max="100" />
+
+            <TextView
+                android:id="@+id/txtStatus"
+                style="@style/Label"
+                android:text="No model loaded" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnSave"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:text="Save" />
+
+                <Button
+                    android:id="@+id/btnUseResult"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:enabled="false"
+                    android:text="Keep &amp; continue" />
+            </LinearLayout>
+
+            <!-- Prompt -->
+            <TextView style="@style/Label" android:text="Prompt" />
+            <EditText
+                android:id="@+id/editPrompt"
+                style="@style/Field"
+                android:gravity="top"
+                android:hint="what should appear in the masked area"
+                android:inputType="textMultiLine|textCapSentences"
+                android:minLines="2" />
+
+            <TextView style="@style/Label" android:text="Negative prompt" />
+            <EditText
+                android:id="@+id/editNegative"
+                style="@style/Field"
+                android:gravity="top"
+                android:inputType="textMultiLine"
+                android:minLines="1" />
+
+            <!-- Sampling -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Steps" />
+                    <EditText android:id="@+id/editSteps" style="@style/Field" android:inputType="number" android:text="20" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="CFG" />
+                    <EditText android:id="@+id/editCfg" style="@style/Field" android:inputType="numberDecimal" android:text="7" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Denoise" />
+                    <EditText android:id="@+id/editStrength" style="@style/Field" android:inputType="numberDecimal" android:text="1.0" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="bottom"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/Cell" android:layout_weight="2">
+                    <TextView style="@style/Label" android:text="Seed (-1 = random)" />
+                    <EditText android:id="@+id/editSeed" style="@style/Field" android:inputType="numberSigned" android:text="-1" />
+                </LinearLayout>
+
+                <Button
+                    android:id="@+id/btnLastSeed"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Reuse last" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Sampler" />
+                    <Spinner android:id="@+id/spinSampler" style="@style/Spin" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Scheduler" />
+                    <Spinner android:id="@+id/spinScheduler" style="@style/Spin" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Working size" />
+                    <Spinner android:id="@+id/spinSize" style="@style/Spin" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Inpaint area" />
+                    <Spinner android:id="@+id/spinArea" style="@style/Spin" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <CheckBox
+                android:id="@+id/chkBlend"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="Only change the masked area (blend edges)"
+                android:textColor="#DDDDDD" />
+
+            <!-- Model -->
+            <TextView style="@style/Header" android:text="Model" />
+
+            <TextView
+                android:id="@+id/txtModel"
+                style="@style/Label"
+                android:text="No .safetensors chosen" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnChooseModel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Choose model" />
+
+                <Button
+                    android:id="@+id/btnLoadModel"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Load" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/Cell" android:layout_weight="2">
+                    <TextView style="@style/Label" android:text="Weights in memory" />
+                    <Spinner android:id="@+id/spinWeights" style="@style/Spin" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Threads" />
+                    <EditText android:id="@+id/editThreads" style="@style/Field" android:inputType="number" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="CLIP skip" />
+                    <EditText android:id="@+id/editClipSkip" style="@style/Field" android:inputType="numberSigned" android:text="-1" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell" android:layout_weight="2">
+                    <CheckBox
+                        android:id="@+id/chkFlash"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="true"
+                        android:text="Flash attention"
+                        android:textColor="#DDDDDD" />
+
+                    <CheckBox
+                        android:id="@+id/chkMmap"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:checked="false"
+                        android:text="Memory-map file"
+                        android:textColor="#DDDDDD" />
+                </LinearLayout>
+            </LinearLayout>
+
+            <!-- Log -->
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView style="@style/Header" android:layout_width="0dp" android:layout_weight="1" android:text="Log" />
+
+                <Button
+                    android:id="@+id/btnCopyLog"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Copy log" />
+            </LinearLayout>
+
+            <TextView
+                android:id="@+id/txtLog"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#0A0A0A"
+                android:fontFamily="monospace"
+                android:padding="6dp"
+                android:textColor="#9E9E9E"
+                android:textIsSelectable="true"
+                android:textSize="10sp" />
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>
