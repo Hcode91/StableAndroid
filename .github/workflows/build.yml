@@ -17,10 +17,13 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - uses: android-actions/setup-android@v3
-
+      # The runner image ships the Android SDK; just add what we need.
       - name: Install NDK and CMake
-        run: sdkmanager --install "ndk;28.2.13676358" "cmake;3.31.6" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+        run: |
+          SDKM="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" --install "ndk;28.2.13676358" "cmake;3.31.6" "platforms;android-36" "build-tools;36.0.0" > /dev/null
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Cache stable-diffusion.cpp source
         uses: actions/cache@v4
