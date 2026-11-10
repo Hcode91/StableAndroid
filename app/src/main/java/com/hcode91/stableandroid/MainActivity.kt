@@ -1,6 +1,8 @@
 package com.hcode91.stableandroid
 
 import android.app.Activity
+import android.app.ActivityManager
+import android.app.ApplicationExitInfo
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ContentValues
@@ -77,6 +79,7 @@ class MainActivity : Activity() {
     private lateinit var chkBlend: CheckBox
     private lateinit var chkFlash: CheckBox
     private lateinit var chkMmap: CheckBox
+    private lateinit var chkTiling: CheckBox
 
     private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
     private val ui = Handler(Looper.getMainLooper())
@@ -102,6 +105,7 @@ class MainActivity : Activity() {
         setupSpinners()
         restorePrefs()
         setupListeners()
+        showPreviousSession()
 
         thread {
             val info = try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }
@@ -159,6 +163,7 @@ class MainActivity : Activity() {
         chkBlend = findViewById(R.id.chkBlend)
         chkFlash = findViewById(R.id.chkFlash)
         chkMmap = findViewById(R.id.chkMmap)
+        chkTiling = findViewById(R.id.chkTiling)
     }
 
     private fun applyInsets() {
@@ -262,6 +267,7 @@ class MainActivity : Activity() {
         chkBlend.isChecked = prefs.getBoolean("blend", true)
         chkFlash.isChecked = prefs.getBoolean("flash", true)
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
+        chkTiling.isChecked = prefs.getBoolean("tiling", true)
         prefs.getString("modelPath", null)?.let { p ->
             val f = File(p)
             if (f.exists()) modelFile = f
@@ -286,6 +292,7 @@ class MainActivity : Activity() {
             .putBoolean("blend", chkBlend.isChecked)
             .putBoolean("flash", chkFlash.isChecked)
             .putBoolean("mmap", chkMmap.isChecked)
+            .putBoolean("tiling", chkTiling.isChecked)
             .putString("modelPath", modelFile?.absolutePath)
             .apply()
     }
@@ -406,6 +413,14 @@ class MainActivity : Activity() {
                 ui.post {
                     loadedModelName = name
                     setBusy(false, "Loaded $version in ${secs}s")
+                    if (name.contains("lcm", ignoreCase = true) && prefs.getString("autoTuned", null) != name) {
+                        prefs.edit().putString("autoTuned", name).apply()
+                        spinSampler.setSelection(samplers.indexOfFirst { it.label == "LCM" })
+                        spinScheduler.setSelection(0)
+                        editSteps.setText("6")
+                        editCfg.setText("1.5")
+                        appendLog("LCM model detected: set sampler LCM, 6 steps, CFG 1.5 (LCM models need 4–8 steps and CFG 1–2).")
+                    }
                     if (!version.contains("Inpaint", ignoreCase = true)) {
                         appendLog("Note: \"$version\" isn't an inpainting model. It will still repaint the " +
                             "masked area, but an SD 1.5 *inpainting* checkpoint blends far better (use Denoise ~0.6–0.8).")
@@ -447,6 +462,7 @@ class MainActivity : Activity() {
         val onlyMasked = (spinArea.selectedItem as Choice).value == 1
         val blend = chkBlend.isChecked
         val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
+        val tiling = chkTiling.isChecked
         val maskCopy = mask.copy(Bitmap.Config.ALPHA_8, false)
 
         lastSeed = seed
@@ -461,7 +477,7 @@ class MainActivity : Activity() {
                     ?: throw IllegalStateException("Paint a mask over the area you want to change first")
                 ui.post { appendLog("Inpainting ${job.width}×${job.height} from region ${job.region.toShortString()}, seed $seed") }
                 val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, prompt, negative,
-                    steps, cfg, strength, seed, sampler, scheduler, clipSkip)
+                    steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling)
                 val gen = ImageOps.fromRgb(out, job.width, job.height)
                 val final = ImageOps.composite(image, maskCopy, job, gen, blend)
                 gen.recycle()
@@ -541,6 +557,7 @@ class MainActivity : Activity() {
     }
 
     private fun appendLog(s: String) {
+        try { File(filesDir, "session.log").appendText(s + "\n") } catch (_: Throwable) { }
         logBuffer.append(s).append('\n')
         if (logBuffer.length > 30_000) logBuffer.delete(0, logBuffer.length - 30_000)
         txtLog.text = logBuffer.takeLast(6_000)
@@ -560,6 +577,44 @@ class MainActivity : Activity() {
         btnUseResult.isEnabled = !busy && canvas.result != null
         btnToggle.isEnabled = canvas.result != null
         btnToggle.text = if (canvas.showResult) "Original" else "Result"
+    }
+
+    /** Shows why the app last exited (e.g. killed for low memory) and the tail of that session's log. */
+    private fun showPreviousSession() {
+        val cur = File(filesDir, "session.log")
+        val prev = File(filesDir, "previous.log")
+        if (cur.exists()) { prev.delete(); cur.renameTo(prev) }
+        val lines = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 30) {
+            try {
+                val am = getSystemService(ActivityManager::class.java)
+                am.getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()?.let { info ->
+                    val reason = when (info.reason) {
+                        ApplicationExitInfo.REASON_LOW_MEMORY -> "killed by Android for low memory"
+                        ApplicationExitInfo.REASON_CRASH_NATIVE -> "native crash"
+                        ApplicationExitInfo.REASON_CRASH -> "app crash"
+                        ApplicationExitInfo.REASON_ANR -> "not responding (ANR)"
+                        ApplicationExitInfo.REASON_SIGNALED -> "killed by signal ${info.status}"
+                        ApplicationExitInfo.REASON_USER_REQUESTED -> "closed by user"
+                        ApplicationExitInfo.REASON_EXIT_SELF -> "exited normally"
+                        else -> "reason code ${info.reason}"
+                    }
+                    val pssMb = info.pss / 1024
+                    val rssMb = info.rss / 1024
+                    lines += "Last exit: $reason (memory at exit: PSS ${pssMb} MB, RSS ${rssMb} MB)" +
+                        (info.description?.let { " – $it" } ?: "")
+                }
+            } catch (_: Throwable) { }
+        }
+        if (prev.exists()) {
+            val tail = try { prev.readLines().takeLast(15) } catch (_: Throwable) { emptyList() }
+            if (tail.isNotEmpty()) {
+                lines += "--- end of previous session log ---"
+                lines += tail
+                lines += "--- current session ---"
+            }
+        }
+        if (lines.isNotEmpty()) appendLog(lines.joinToString("\n"))
     }
 
     private fun toast(s: String) = Toast.makeText(this, s, Toast.LENGTH_LONG).show()

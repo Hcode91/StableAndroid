@@ -184,7 +184,8 @@ JNIEXPORT jbyteArray JNICALL
 Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray jinit, jbyteArray jmask,
                                                 jint width, jint height, jstring jprompt,
                                                 jstring jneg, jint steps, jfloat cfg, jfloat strength,
-                                                jlong seed, jint sampler, jint scheduler, jint clipSkip) {
+                                                jlong seed, jint sampler, jint scheduler, jint clipSkip,
+                                                jboolean vaeTiling) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (!g_ctx) {
         throw_java(env, "No model loaded.");
@@ -214,6 +215,8 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
     g.strength = strength;
     g.seed = seed;
     g.batch_count = 1;
+    // Tiled VAE keeps the encode/decode memory peak small (avoids OOM kills).
+    g.vae_tiling_params.enabled = vaeTiling;
     g.sample_params.sample_steps = steps;
     g.sample_params.guidance.txt_cfg = cfg;
     g.sample_params.sample_method =

@@ -40,6 +40,7 @@ object SdNative {
         sampler: Int,
         scheduler: Int,
         clipSkip: Int,
+        vaeTiling: Boolean,
     ): ByteArray
 
     @JvmStatic external fun cancel()
