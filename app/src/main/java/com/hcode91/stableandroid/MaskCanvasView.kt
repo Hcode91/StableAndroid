@@ -42,6 +42,10 @@ class MaskCanvasView @JvmOverloads constructor(
         set(value) { field = value; invalidate() }
 
     var onMaskChanged: (() -> Unit)? = null
+    /** Called with -1 / +1 when the user swipes left/right while a result is shown. */
+    var onSwipe: ((Int) -> Unit)? = null
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
 
     private val viewMatrix = Matrix()
     private val inverse = Matrix()
@@ -208,7 +212,21 @@ class MaskCanvasView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (image == null || showResult) return false
+        if (image == null) return false
+        if (showResult) {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> { swipeStartX = event.x; swipeStartY = event.y }
+                MotionEvent.ACTION_UP -> {
+                    val dx = event.x - swipeStartX
+                    val dy = event.y - swipeStartY
+                    if (kotlin.math.abs(dx) > 100 * resources.displayMetrics.density / 2 &&
+                        kotlin.math.abs(dx) > kotlin.math.abs(dy)) {
+                        onSwipe?.invoke(if (dx < 0) 1 else -1)
+                    }
+                }
+            }
+            return true
+        }
         scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {

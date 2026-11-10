@@ -110,6 +110,36 @@
                 android:text="No model loaded" />
 
             <LinearLayout
+                android:id="@+id/rowResults"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:visibility="gone">
+
+                <Button
+                    android:id="@+id/btnPrev"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="◀" />
+
+                <TextView
+                    android:id="@+id/txtResult"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:gravity="center"
+                    android:textColor="#FFFFFF"
+                    android:textSize="15sp" />
+
+                <Button
+                    android:id="@+id/btnNext"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="▶" />
+            </LinearLayout>
+
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
@@ -180,6 +210,11 @@
                 <LinearLayout style="@style/Cell" android:layout_weight="2">
                     <TextView style="@style/Label" android:text="Seed (-1 = random)" />
                     <EditText android:id="@+id/editSeed" style="@style/Field" android:inputType="numberSigned" android:text="-1" />
+                </LinearLayout>
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Images" />
+                    <EditText android:id="@+id/editImages" style="@style/Field" android:inputType="number" android:text="3" />
                 </LinearLayout>
 
                 <Button

@@ -81,12 +81,12 @@ object ImageOps {
         return out
     }
 
-    fun fromRgb(rgb: ByteArray, w: Int, h: Int): Bitmap {
+    fun fromRgb(rgb: ByteArray, w: Int, h: Int, offset: Int = 0): Bitmap {
         val px = IntArray(w * h)
         for (i in px.indices) {
-            val r = rgb[i * 3].toInt() and 0xFF
-            val g = rgb[i * 3 + 1].toInt() and 0xFF
-            val b = rgb[i * 3 + 2].toInt() and 0xFF
+            val r = rgb[offset + i * 3].toInt() and 0xFF
+            val g = rgb[offset + i * 3 + 1].toInt() and 0xFF
+            val b = rgb[offset + i * 3 + 2].toInt() and 0xFF
             px[i] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
         }
         return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)

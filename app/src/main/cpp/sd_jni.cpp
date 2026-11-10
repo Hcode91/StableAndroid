@@ -28,6 +28,8 @@ constexpr size_t kMaxLogs = 400;
 std::atomic<int> g_step{0};
 std::atomic<int> g_steps{0};
 std::atomic<float> g_step_time{0.f};
+std::atomic<int> g_sample_pass{0};
+std::atomic<int> g_pass_base{0};
 std::mutex g_stage_mutex;
 std::string g_stage;
 
@@ -64,6 +66,7 @@ void progress_cb(int step, int steps, float time, void*) {
 
 void gen_progress_cb(const sd_generation_progress_t* p, void*) {
     if (!p) return;
+    g_sample_pass.store(p->sample_pass);
     std::lock_guard<std::mutex> lock(g_stage_mutex);
     g_stage = p->stage ? p->stage : "";
     if (p->detail && p->detail[0]) {
@@ -179,13 +182,14 @@ Java_com_hcode91_stableandroid_SdNative_isLoaded(JNIEnv*, jclass) {
 }
 
 // init: RGB bytes (w*h*3); mask: one byte per pixel (w*h), 255 = repaint.
-// Returns RGB bytes (w*h*3) of the generated image.
+// Generates batchCount images (seeds seed, seed+1, ...) and returns their RGB
+// bytes concatenated (n * w*h*3); n can be smaller if stopped early.
 JNIEXPORT jbyteArray JNICALL
 Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray jinit, jbyteArray jmask,
                                                 jint width, jint height, jstring jprompt,
                                                 jstring jneg, jint steps, jfloat cfg, jfloat strength,
                                                 jlong seed, jint sampler, jint scheduler, jint clipSkip,
-                                                jboolean vaeTiling) {
+                                                jboolean vaeTiling, jint batchCount) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (!g_ctx) {
         throw_java(env, "No model loaded.");
@@ -214,7 +218,7 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
     g.height = height;
     g.strength = strength;
     g.seed = seed;
-    g.batch_count = 1;
+    g.batch_count = batchCount < 1 ? 1 : batchCount;
     // Tiled VAE keeps the encode/decode memory peak small (avoids OOM kills).
     g.vae_tiling_params.enabled = vaeTiling;
     g.sample_params.sample_steps = steps;
@@ -226,6 +230,7 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
 
     g_step.store(0);
     g_steps.store(steps);
+    g_pass_base.store(g_sample_pass.load());
     sd_cancel_generation(g_ctx, SD_CANCEL_RESET);
 
     sd_image_generation_result_t* result = nullptr;
@@ -235,41 +240,44 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
         throw_java(env, "Generation failed or was cancelled.");
         return nullptr;
     }
-    sd_image_t& img = result->items[0].image;
-    jbyteArray out = nullptr;
-    if ((int)img.width == width && (int)img.height == height && img.channel >= 3) {
-        out = env->NewByteArray((jsize)(npx * 3));
-        if (img.channel == 3) {
-            env->SetByteArrayRegion(out, 0, (jsize)(npx * 3), reinterpret_cast<const jbyte*>(img.data));
-        } else {
-            std::vector<uint8_t> rgb(npx * 3);
-            for (size_t i = 0; i < npx; i++) {
-                memcpy(&rgb[i * 3], &img.data[i * img.channel], 3);
-            }
-            env->SetByteArrayRegion(out, 0, (jsize)rgb.size(), reinterpret_cast<const jbyte*>(rgb.data()));
+    std::vector<uint8_t> all;
+    all.reserve(npx * 3 * result->count);
+    for (int k = 0; k < result->count; k++) {
+        sd_image_t& img = result->items[k].image;
+        if (!img.data || (int)img.width != width || (int)img.height != height || img.channel < 3) {
+            push_log("W skipping output " + std::to_string(k + 1) + " with unexpected size");
+            continue;
         }
-    } else {
+        size_t off = all.size();
+        all.resize(off + npx * 3);
+        for (size_t i = 0; i < npx; i++) {
+            memcpy(&all[off + i * 3], &img.data[i * img.channel], 3);
+        }
+    }
+    if (all.empty()) {
         free_sd_image_generation_result(result);
-        throw_java(env, "Unexpected output size " + std::to_string(img.width) + "x" + std::to_string(img.height));
+        throw_java(env, "Generation produced no usable images.");
         return nullptr;
     }
+    jbyteArray out = env->NewByteArray((jsize)all.size());
+    env->SetByteArrayRegion(out, 0, (jsize)all.size(), reinterpret_cast<const jbyte*>(all.data()));
     free_sd_image_generation_result(result);
     return out;
 }
 
 JNIEXPORT void JNICALL
-Java_com_hcode91_stableandroid_SdNative_cancel(JNIEnv*, jclass) {
+Java_com_hcode91_stableandroid_SdNative_cancel(JNIEnv*, jclass, jboolean finishCurrent) {
     // Deliberately no ctx mutex: generation holds it.
     sd_ctx_t* ctx = g_ctx;
-    if (ctx) sd_cancel_generation(ctx, SD_CANCEL_ALL);
+    if (ctx) sd_cancel_generation(ctx, finishCurrent ? SD_CANCEL_NEW_LATENTS : SD_CANCEL_ALL);
 }
 
-// [step, steps]
+// [step, steps, image number (1-based, 0 before sampling)]
 JNIEXPORT jintArray JNICALL
 Java_com_hcode91_stableandroid_SdNative_progress(JNIEnv* env, jclass) {
-    jint v[2] = {g_step.load(), g_steps.load()};
-    jintArray arr = env->NewIntArray(2);
-    env->SetIntArrayRegion(arr, 0, 2, v);
+    jint v[3] = {g_step.load(), g_steps.load(), g_sample_pass.load() - g_pass_base.load()};
+    jintArray arr = env->NewIntArray(3);
+    env->SetIntArrayRegion(arr, 0, 3, v);
     return arr;
 }
 

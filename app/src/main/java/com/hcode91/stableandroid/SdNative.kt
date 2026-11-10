@@ -24,7 +24,8 @@ object SdNative {
 
     /**
      * init: RGB bytes (w*h*3), mask: w*h bytes (255 = repaint).
-     * Returns RGB bytes of the generated image. Throws on failure/cancel.
+     * Generates [batchCount] images (seed, seed+1, ...) and returns their RGB bytes
+     * concatenated; fewer if stopped early. Throws on failure/cancel.
      */
     @JvmStatic external fun inpaint(
         init: ByteArray,
@@ -41,9 +42,11 @@ object SdNative {
         scheduler: Int,
         clipSkip: Int,
         vaeTiling: Boolean,
+        batchCount: Int,
     ): ByteArray
 
-    @JvmStatic external fun cancel()
+    /** finishCurrent = stop after the image being sampled and return what's done. */
+    @JvmStatic external fun cancel(finishCurrent: Boolean)
     @JvmStatic external fun progress(): IntArray
     @JvmStatic external fun lastStepTime(): Float
     @JvmStatic external fun stage(): String

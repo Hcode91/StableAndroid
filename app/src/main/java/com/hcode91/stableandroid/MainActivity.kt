@@ -88,6 +88,14 @@ class MainActivity : Activity() {
     private var loadedModelName: String? = null
     private var busy = false
     private var lastSeed = -1L
+    private val results = mutableListOf<Bitmap>()
+    private val resultSeeds = mutableListOf<Long>()
+    private var resultIndex = 0
+    private var batchSize = 1
+    private var stopRequested = false
+    private lateinit var editImages: EditText
+    private lateinit var txtResult: TextView
+    private lateinit var rowResults: View
     private val logBuffer = StringBuilder()
 
     private val poller = object : Runnable {
@@ -164,6 +172,9 @@ class MainActivity : Activity() {
         chkFlash = findViewById(R.id.chkFlash)
         chkMmap = findViewById(R.id.chkMmap)
         chkTiling = findViewById(R.id.chkTiling)
+        editImages = findViewById(R.id.editImages)
+        txtResult = findViewById(R.id.txtResult)
+        rowResults = findViewById(R.id.rowResults)
     }
 
     private fun applyInsets() {
@@ -222,19 +233,34 @@ class MainActivity : Activity() {
         }
         btnGenerate.setOnClickListener { generate() }
         btnCancel.setOnClickListener {
-            SdNative.cancel()
-            txtStatus.text = "Cancelling…"
+            // With several images, the first tap keeps the ones already finished.
+            if (batchSize > 1 && !stopRequested) {
+                stopRequested = true
+                SdNative.cancel(true)
+                btnCancel.text = "Stop now"
+                appendLog("Stopping after the current image…")
+            } else {
+                SdNative.cancel(false)
+                txtStatus.text = "Cancelling…"
+            }
         }
+        findViewById<Button>(R.id.btnPrev).setOnClickListener { showResultAt(resultIndex - 1) }
+        findViewById<Button>(R.id.btnNext).setOnClickListener { showResultAt(resultIndex + 1) }
+        canvas.onSwipe = { dir -> showResultAt(resultIndex + dir) }
         btnSave.setOnClickListener { saveResult() }
         btnUseResult.setOnClickListener {
             canvas.result?.let {
-                canvas.setImage(it)
+                val keep = it
+                results.filter { r -> r !== keep }.forEach { r -> r.recycle() }
+                results.clear(); resultSeeds.clear()
+                canvas.setImage(keep)
                 updateUi()
                 toast("Result is now the input image")
             }
         }
         btnLastSeed.setOnClickListener {
-            if (lastSeed >= 0) editSeed.setText(lastSeed.toString())
+            val s = resultSeeds.getOrNull(resultIndex) ?: lastSeed
+            if (s >= 0) editSeed.setText(s.toString())
         }
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
@@ -256,6 +282,7 @@ class MainActivity : Activity() {
         editCfg.setText(prefs.getString("cfg", "7"))
         editStrength.setText(prefs.getString("strength", "1.0"))
         editSeed.setText(prefs.getString("seed", "-1"))
+        editImages.setText(prefs.getString("images", "3"))
         editClipSkip.setText(prefs.getString("clipSkip", "-1"))
         val cores = try { SdNative.physicalCores() } catch (t: Throwable) { 4 }
         editThreads.setText(prefs.getString("threads", cores.coerceIn(1, 4).toString()))
@@ -282,6 +309,7 @@ class MainActivity : Activity() {
             .putString("cfg", editCfg.text.toString())
             .putString("strength", editStrength.text.toString())
             .putString("seed", editSeed.text.toString())
+            .putString("images", editImages.text.toString())
             .putString("clipSkip", editClipSkip.text.toString())
             .putString("threads", editThreads.text.toString())
             .putInt("sampler", spinSampler.selectedItemPosition)
@@ -343,6 +371,7 @@ class MainActivity : Activity() {
             try {
                 val bmp = ImageOps.load(contentResolver, uri)
                 ui.post {
+                    clearResults()
                     canvas.setImage(bmp)
                     txtStatus.text = "Image ${bmp.width}×${bmp.height}. Paint over the area to change."
                     updateUi()
@@ -463,9 +492,13 @@ class MainActivity : Activity() {
         val blend = chkBlend.isChecked
         val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
         val tiling = chkTiling.isChecked
+        val count = (editImages.text.toString().toIntOrNull() ?: 1).coerceIn(1, 8)
         val maskCopy = mask.copy(Bitmap.Config.ALPHA_8, false)
 
         lastSeed = seed
+        batchSize = count
+        stopRequested = false
+        btnCancel.text = if (count > 1) "Stop" else "Cancel"
         savePrefs()
         setBusy(true, "Preparing…")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -475,18 +508,27 @@ class MainActivity : Activity() {
             try {
                 val job = ImageOps.prepare(image, maskCopy, onlyMasked, size, 32)
                     ?: throw IllegalStateException("Paint a mask over the area you want to change first")
-                ui.post { appendLog("Inpainting ${job.width}×${job.height} from region ${job.region.toShortString()}, seed $seed") }
+                ui.post {
+                    appendLog("Inpainting $count× ${job.width}×${job.height} from region " +
+                        "${job.region.toShortString()}, seeds $seed–${seed + count - 1}")
+                }
                 val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, prompt, negative,
-                    steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling)
-                val gen = ImageOps.fromRgb(out, job.width, job.height)
-                val final = ImageOps.composite(image, maskCopy, job, gen, blend)
-                gen.recycle()
+                    steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling, count)
+                val frame = job.width * job.height * 3
+                val n = out.size / frame
+                val finals = (0 until n).map { k ->
+                    val gen = ImageOps.fromRgb(out, job.width, job.height, k * frame)
+                    val f = ImageOps.composite(image, maskCopy, job, gen, blend)
+                    gen.recycle()
+                    f
+                }
                 val secs = (System.currentTimeMillis() - started) / 1000.0
                 ui.post {
-                    canvas.result = final
-                    canvas.showResult = true
-                    setBusy(false, "Done in ${"%.1f".format(secs)}s · seed $seed")
-                    updateUi()
+                    clearResults()
+                    results += finals
+                    resultSeeds += (0 until n).map { seed + it }
+                    setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
+                    showResultAt(0)
                 }
             } catch (t: Throwable) {
                 ui.post { setBusy(false, "Failed: ${t.message}") }
@@ -495,6 +537,21 @@ class MainActivity : Activity() {
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
         }
+    }
+
+    private fun clearResults() {
+        canvas.result = null
+        canvas.showResult = false
+        results.forEach { it.recycle() }
+        results.clear(); resultSeeds.clear(); resultIndex = 0
+    }
+
+    private fun showResultAt(i: Int) {
+        if (results.isEmpty()) return
+        resultIndex = ((i % results.size) + results.size) % results.size
+        canvas.result = results[resultIndex]
+        canvas.showResult = true
+        updateUi()
     }
 
     private fun saveResult() {
@@ -542,16 +599,17 @@ class MainActivity : Activity() {
         if (log.isNotEmpty()) appendLog(log.trimEnd())
         if (!busy) return
         val p = SdNative.progress()
-        val step = p[0]; val total = p[1]
+        val step = p[0]; val total = p[1]; val img = p[2]
         val stage = SdNative.stage()
+        val imgLabel = if (batchSize > 1 && img > 0) "Image ${img.coerceAtMost(batchSize)}/$batchSize · " else ""
         if (step > 0 && total > 0) {
             progress.isIndeterminate = false
             progress.max = total
             progress.progress = step
             val t = SdNative.lastStepTime()
             val speed = if (t > 0) " · ${"%.1f".format(t)}s/it" else ""
-            txtStatus.text = "Step $step/$total$speed" + if (stage.isNotEmpty()) " · $stage" else ""
-        } else if (stage.isNotEmpty() && txtStatus.text.startsWith("Step").not()) {
+            txtStatus.text = imgLabel + "Step $step/$total$speed" + if (stage.isNotEmpty()) " · $stage" else ""
+        } else if (stage.isNotEmpty() && !txtStatus.text.contains("Step ")) {
             txtStatus.text = stage
         }
     }
@@ -577,6 +635,12 @@ class MainActivity : Activity() {
         btnUseResult.isEnabled = !busy && canvas.result != null
         btnToggle.isEnabled = canvas.result != null
         btnToggle.text = if (canvas.showResult) "Original" else "Result"
+        rowResults.visibility = if (results.isNotEmpty()) View.VISIBLE else View.GONE
+        if (results.isNotEmpty()) {
+            txtResult.text = "Result ${resultIndex + 1}/${results.size} · seed ${resultSeeds[resultIndex]}" +
+                if (canvas.showResult) "" else " (showing original)"
+        }
+        if (!busy) btnCancel.text = "Cancel"
     }
 
     /** Shows why the app last exited (e.g. killed for low memory) and the tail of that session's log. */
