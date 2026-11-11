@@ -47,6 +47,8 @@ object SdNative {
         clipSkip: Int,
         vaeTiling: Boolean,
         batchCount: Int,
+        loraPath: String?,
+        loraStrength: Float,
     ): ByteArray
 
     /** finishCurrent = stop after the image being sampled and return what's done. */

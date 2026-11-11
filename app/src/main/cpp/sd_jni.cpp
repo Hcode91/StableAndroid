@@ -205,7 +205,8 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
                                                 jint width, jint height, jstring jprompt,
                                                 jstring jneg, jint steps, jfloat cfg, jfloat strength,
                                                 jlong seed, jint sampler, jint scheduler, jint clipSkip,
-                                                jboolean vaeTiling, jint batchCount) {
+                                                jboolean vaeTiling, jint batchCount, jstring jlora,
+                                                jfloat loraStrength) {
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (!g_ctx) {
         throw_java(env, "No model loaded.");
@@ -235,6 +236,13 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
     g.strength = strength;
     g.seed = seed;
     g.batch_count = batchCount < 1 ? 1 : batchCount;
+    // Optional LoRA add-on (e.g. LCM LoRA), applied by the engine for this run.
+    std::string lora = jstr(env, jlora);
+    sd_lora_t lora_item = {false, loraStrength, lora.c_str()};
+    if (!lora.empty()) {
+        g.loras = &lora_item;
+        g.lora_count = 1;
+    }
     // Tiled VAE keeps the encode/decode memory peak small (avoids OOM kills).
     g.vae_tiling_params.enabled = vaeTiling;
     g.sample_params.sample_steps = steps;

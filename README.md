@@ -52,6 +52,13 @@ Style models (e.g. an anime SD 1.5 checkpoint) give much stronger results than r
 Regular SD 1.5 checkpoints also work (masked img2img), but dedicated inpainting checkpoints
 blend far better.
 
+## LoRA (e.g. LCM LoRA)
+
+Under **Model**, **Choose LoRA** adds one LoRA file on top of the loaded checkpoint; **Remove**
+clears it and **Strength** is normally 1.0. It is applied on the next run, no reload needed.
+The main use is the SD 1.5 **LCM LoRA** (`latent-consistency/lcm-lora-sdv1-5`), which lets any
+SD 1.5 checkpoint, including inpainting ones, run in 4–8 steps with Sampler **LCM** and CFG 1–1.5.
+
 ## Running in the background
 
 While a model is loading or images are generating, the app runs a foreground service with a

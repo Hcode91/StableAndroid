@@ -14,8 +14,9 @@ import java.io.RandomAccessFile
  */
 object ModelStore {
 
-    fun dir(ctx: Context): File =
-        File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, "models").apply { mkdirs() }
+    /** [folder] is "models" for checkpoints or "loras" for LoRA add-ons; each keeps one file. */
+    fun dir(ctx: Context, folder: String = "models"): File =
+        File(ctx.getExternalFilesDir(null) ?: ctx.filesDir, folder).apply { mkdirs() }
 
     fun queryName(ctx: Context, uri: Uri): Pair<String, Long> {
         ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use { c ->
@@ -32,10 +33,11 @@ object ModelStore {
      * Copies [uri] into the models folder (skipping if an identical-size copy exists)
      * and deletes other models there to save space. Returns the local file.
      */
-    fun import(ctx: Context, uri: Uri, onProgress: (copied: Long, total: Long) -> Unit): File {
+    fun import(ctx: Context, uri: Uri, folder: String = "models",
+               onProgress: (copied: Long, total: Long) -> Unit): File {
         val (rawName, size) = queryName(ctx, uri)
         val name = rawName.replace(Regex("[^A-Za-z0-9._ -]"), "_")
-        val dir = dir(ctx)
+        val dir = dir(ctx, folder)
         val dest = File(dir, name)
         if (dest.exists() && size > 0 && dest.length() == size) return dest
 

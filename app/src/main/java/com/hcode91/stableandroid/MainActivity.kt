@@ -121,6 +121,9 @@ class MainActivity : Activity() {
     private val ui = Handler(Looper.getMainLooper())
 
     private var modelFile: File? = null
+    private var loraFile: File? = null
+    private lateinit var txtLora: TextView
+    private lateinit var editLoraStrength: EditText
     private var loadedModelName: String? = null
     private var busy = false
     private var lastSeed = -1L
@@ -222,6 +225,8 @@ class MainActivity : Activity() {
         spinCompute = findViewById(R.id.spinCompute)
         chkGpuSafe = findViewById(R.id.chkGpuSafe)
         chkFastVae = findViewById(R.id.chkFastVae)
+        txtLora = findViewById(R.id.txtLora)
+        editLoraStrength = findViewById(R.id.editLoraStrength)
         spinStyle = findViewById(R.id.spinStyle)
         btnTabInpaint = findViewById(R.id.btnTabInpaint)
         btnTabCreate = findViewById(R.id.btnTabCreate)
@@ -336,6 +341,15 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
+        findViewById<Button>(R.id.btnChooseLora).setOnClickListener { pickFile(REQ_LORA) }
+        findViewById<Button>(R.id.btnClearLora).setOnClickListener {
+            if (busy || loraFile == null) return@setOnClickListener
+            loraFile?.delete()
+            loraFile = null
+            savePrefs()
+            appendLog("LoRA removed. If it was an LCM LoRA, set Steps back to about 20 and CFG to 6–7.")
+            updateUi()
+        }
         findViewById<Button>(R.id.btnCopyLog).setOnClickListener {
             val cm = getSystemService(ClipboardManager::class.java)
             cm.setPrimaryClip(ClipData.newPlainText("StableAndroid log", logBuffer.toString()))
@@ -374,6 +388,11 @@ class MainActivity : Activity() {
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
         chkTiling.isChecked = prefs.getBoolean("tiling", true)
         chkFastVae.isChecked = prefs.getBoolean("fastVae", true)
+        editLoraStrength.setText(prefs.getString("loraStrength", "1.0"))
+        prefs.getString("loraPath", null)?.let { p ->
+            val f = File(p)
+            if (f.exists()) loraFile = f
+        }
         prefs.getString("modelPath", null)?.let { p ->
             val f = File(p)
             if (f.exists()) modelFile = f
@@ -405,6 +424,8 @@ class MainActivity : Activity() {
             .putBoolean("tiling", chkTiling.isChecked)
             .putBoolean("fastVae", chkFastVae.isChecked)
             .putString("modelPath", modelFile?.absolutePath)
+            .putString("loraPath", loraFile?.absolutePath)
+            .putString("loraStrength", editLoraStrength.text.toString())
             .apply()
     }
 
@@ -419,6 +440,7 @@ class MainActivity : Activity() {
             REQ_IMAGE -> openImage(uri)
             REQ_STYLE_IMAGE -> openStylizeImage(uri)
             REQ_MODEL -> importModel(uri)
+            REQ_LORA -> importLora(uri)
         }
     }
 
@@ -431,13 +453,15 @@ class MainActivity : Activity() {
         startActivityForResult(i, req)
     }
 
-    private fun pickModel() {
+    private fun pickModel() = pickFile(REQ_MODEL)
+
+    private fun pickFile(req: Int) {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
             type = "*/*"
         }
         @Suppress("DEPRECATION")
-        startActivityForResult(i, REQ_MODEL)
+        startActivityForResult(i, req)
     }
 
     private fun handleIncomingIntent(intent: Intent?) {
@@ -510,7 +534,7 @@ class MainActivity : Activity() {
                 // Release the old model before deleting its file.
                 SdNative.freeModel()
                 ui.post { loadedModelName = null }
-                val file = ModelStore.import(this, uri) { copied, total ->
+                val file = ModelStore.import(this, uri, "models") { copied, total ->
                     ui.post {
                         if (total > 0) {
                             progress.isIndeterminate = false
@@ -537,6 +561,42 @@ class MainActivity : Activity() {
             }
         }
     }
+
+    private fun importLora(uri: Uri) {
+        if (busy) return
+        val (name, size) = ModelStore.queryName(this, uri)
+        if (size > 1024L * 1024 * 1024) {
+            toast("That file is over 1 GB, so it looks like a full model, not a LoRA")
+            return
+        }
+        setBusy(true, "Copying LoRA $name…")
+        thread(name = "sd-lora-import") {
+            try {
+                val file = ModelStore.import(this, uri, "loras") { _, _ -> }
+                ModelStore.checkFile(file)?.let { file.delete(); throw IllegalStateException(it) }
+                ui.post {
+                    loraFile = file
+                    appendLog("LoRA: ${file.name} (${file.length() / (1024 * 1024)} MB). It is applied on the next run.")
+                    if (file.name.contains("lcm", ignoreCase = true)) {
+                        spinSampler.setSelection(samplers.indexOfFirst { it.label == "LCM" })
+                        spinScheduler.setSelection(0)
+                        editSteps.setText("6")
+                        editCfg.setText("1.0")
+                        appendLog("LCM LoRA detected: set sampler LCM, 6 steps, CFG 1.0.")
+                    } else {
+                        appendLog("If this is an LCM LoRA, set Sampler to LCM, Steps to 6 and CFG to 1.0 yourself " +
+                            "(the file name doesn't say, so the settings were left alone).")
+                    }
+                    savePrefs()
+                    setBusy(false, "LoRA ready")
+                }
+            } catch (t: Throwable) {
+                ui.post { setBusy(false, "LoRA failed: ${t.message}") }
+            }
+        }
+    }
+
+    private fun loraStrength() = (editLoraStrength.text.toString().toFloatOrNull() ?: 1f).coerceIn(-2f, 2f)
 
     private fun loadModel() {
         val file = modelFile ?: run { toast("Choose a model file first"); return }
@@ -656,7 +716,8 @@ class MainActivity : Activity() {
                 }
                 if (loadedBackend != "cpu") markGpuInFlight(true)
                 val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, prompt, negative,
-                    steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling, count)
+                    steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling, count,
+                    loraFile?.absolutePath, loraStrength())
                 markGpuInFlight(false)
                 val frame = job.width * job.height * 3
                 val n = out.size / frame
@@ -802,7 +863,7 @@ class MainActivity : Activity() {
                 ui.post { appendLog("Stylizing $count× ${w}×$h (${style.label}, denoise $strength), seeds $seed–${seed + count - 1}") }
                 if (loadedBackend != "cpu") markGpuInFlight(true)
                 val out = SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg, strength, seed,
-                    sampler, scheduler, clipSkip, tiling, count)
+                    sampler, scheduler, clipSkip, tiling, count, loraFile?.absolutePath, loraStrength())
                 markGpuInFlight(false)
                 val frame = w * h * 3
                 val n = out.size / frame
@@ -948,6 +1009,7 @@ class MainActivity : Activity() {
         if (mode == 1) canvas.previewHint = "Tap Photo to choose a picture to stylize"
         btnCancel.isEnabled = busy && loaded
         btnLoadModel.isEnabled = !busy && modelFile != null
+        txtLora.text = loraFile?.let { "LoRA: ${it.name}" } ?: "LoRA: none (optional add-on, e.g. an LCM LoRA for 4–8 step runs)"
         btnSave.isEnabled = !busy && currentResult() != null
         btnUseResult.isEnabled = !busy && currentResult() != null
         btnToggle.isEnabled = canvas.result != null
@@ -1058,5 +1120,6 @@ class MainActivity : Activity() {
         private const val REQ_IMAGE = 1
         private const val REQ_MODEL = 2
         private const val REQ_STYLE_IMAGE = 3
+        private const val REQ_LORA = 4
     }
 }

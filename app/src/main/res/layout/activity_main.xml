@@ -333,6 +333,36 @@
                     android:text="Load" />
             </LinearLayout>
 
+            <TextView
+                android:id="@+id/txtLora"
+                style="@style/Label"
+                android:text="LoRA: none" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="bottom"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnChooseLora"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Choose LoRA" />
+
+                <Button
+                    android:id="@+id/btnClearLora"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Remove" />
+
+                <LinearLayout style="@style/Cell">
+                    <TextView style="@style/Label" android:text="Strength" />
+                    <EditText android:id="@+id/editLoraStrength" style="@style/Field" android:inputType="numberDecimal" android:text="1.0" />
+                </LinearLayout>
+            </LinearLayout>
+
             <TextView style="@style/Label" android:text="Run on" />
             <Spinner android:id="@+id/spinCompute" style="@style/Spin" />
 
