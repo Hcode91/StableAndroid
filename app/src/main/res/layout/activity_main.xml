@@ -392,6 +392,14 @@
             </LinearLayout>
 
             <CheckBox
+                android:id="@+id/chkGpuF32"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                android:text="GPU full precision (slower; try if images come out grey or black; applies after restart)"
+                android:textColor="#DDDDDD" />
+
+            <CheckBox
                 android:id="@+id/chkGpuSafe"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

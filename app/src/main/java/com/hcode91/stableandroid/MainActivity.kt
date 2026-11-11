@@ -66,6 +66,7 @@ class MainActivity : Activity() {
 
     private val computes = listOf(
         Choice("CPU", 0), Choice("GPU (Vulkan)", 1), Choice("GPU + CPU for VAE (encode/decode)", 2),
+        Choice("GPU for main model only (text + VAE on CPU)", 3),
     )
     private val areas = listOf(Choice("Only masked", 1), Choice("Whole image", 0))
     private val weightTypes = listOf(
@@ -159,6 +160,7 @@ class MainActivity : Activity() {
         thread {
             val info = (try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }) +
                 "\nGPU safe mode: " + (if (prefs.getBoolean("gpuSafe", true)) "on" else "off") +
+                " · full precision: " + (if (prefs.getBoolean("gpuF32", false)) "on" else "off") +
                 (if (startupNotes.isEmpty()) "\nGPU driver: system" else "\n" + startupNotes.trimEnd())
             ui.post { appendLog(info) }
         }
@@ -386,6 +388,13 @@ class MainActivity : Activity() {
         spinWeights.setSelection(prefs.getInt("weights", 0))
         spinCompute.setSelection(prefs.getInt("compute", 0))
         chkGpuSafe.isChecked = prefs.getBoolean("gpuSafe", true)
+        findViewById<CheckBox>(R.id.chkGpuF32).apply {
+            isChecked = prefs.getBoolean("gpuF32", false)
+            setOnCheckedChangeListener { _, on ->
+                prefs.edit().putBoolean("gpuF32", on).apply()
+                toast("Close and reopen the app for this to take effect")
+            }
+        }
         chkGpuSafe.setOnCheckedChangeListener { _, on ->
             prefs.edit().putBoolean("gpuSafe", on).apply()
             toast("Close and reopen the app for this to take effect")
@@ -652,7 +661,11 @@ class MainActivity : Activity() {
                     val vk = devices.firstOrNull { it.startsWith("vulkan", ignoreCase = true) }
                     if (vk != null) {
                         val dev = vk.substringBefore('\t').lowercase()
-                        backend = if (computeMode == 2) "all=$dev,vae=cpu" else dev
+                        backend = when (computeMode) {
+                            2 -> "all=$dev,vae=cpu"
+                            3 -> "all=cpu,diffusion=$dev"
+                            else -> dev
+                        }
                         gpuName = vk.substringAfter('\t', "")
                     } else {
                         ui.post { appendLog("No usable Vulkan GPU found. Using the CPU instead.") }
@@ -1132,7 +1145,14 @@ class MainActivity : Activity() {
         applyGpuDriver()
         val safe = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("gpuSafe", true)
         val flags = listOf("GGML_VK_DISABLE_COOPMAT", "GGML_VK_DISABLE_COOPMAT2",
-            "GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "GGML_VK_DISABLE_BFLOAT16")
+            "GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "GGML_VK_DISABLE_BFLOAT16",
+            "GGML_VK_DISABLE_FUSION", "GGML_VK_DISABLE_MULTI_ADD", "GGML_VK_DISABLE_GRAPH_OPTIMIZE")
+        // Half-precision GPU maths can overflow to NaN on some drivers (grey/black images).
+        val f32 = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("gpuF32", false)
+        try {
+            if (f32) android.system.Os.setenv("GGML_VK_DISABLE_F16", "1", true)
+            else android.system.Os.unsetenv("GGML_VK_DISABLE_F16")
+        } catch (_: Throwable) { }
         try {
             for (f in flags) {
                 if (safe) android.system.Os.setenv(f, "1", true) else android.system.Os.unsetenv(f)
