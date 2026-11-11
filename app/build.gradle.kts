@@ -64,3 +64,8 @@ kotlin {
         jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
     }
 }
+
+dependencies {
+    // Runs the Florence-2 image-description models (Describe button).
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+}

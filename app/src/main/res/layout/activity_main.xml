@@ -214,7 +214,24 @@
             </LinearLayout>
 
             <!-- Prompt -->
-            <TextView style="@style/Label" android:text="Prompt" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    style="@style/Label"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:text="Prompt" />
+
+                <Button
+                    android:id="@+id/btnDescribe"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Describe image" />
+            </LinearLayout>
             <EditText
                 android:id="@+id/editPrompt"
                 style="@style/Field"
@@ -406,6 +423,30 @@
 
             <TextView style="@style/Label" android:text="Run on" />
             <Spinner android:id="@+id/spinCompute" style="@style/Spin" />
+
+            <TextView
+                android:id="@+id/txtDescribe"
+                style="@style/Label"
+                android:text="Describe model: not installed" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnDescribeFiles"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Choose describe files" />
+
+                <Button
+                    android:id="@+id/btnDescribeRemove"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Remove" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/txtDriver"

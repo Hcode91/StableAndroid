@@ -80,3 +80,15 @@ else
   git -C "$AT" submodule update -q --init --depth 1
   echo "libadrenotools ready at $ADRENO_COMMIT"
 fi
+
+# --- Florence-2 vocabulary (MIT) for the Describe feature; the model files are user-supplied
+FVOCAB="$ROOT/app/src/main/assets/florence_vocab.json"
+FVOCAB_SHA="394fdc63c71aabe0a9b97117f5d62fb5fcc4d59b2b3ea929a3929e6a53217b3c"
+if [ -f "$FVOCAB" ] && echo "$FVOCAB_SHA  $FVOCAB" | sha256sum -c --status; then
+  echo "Florence vocab already present"
+else
+  mkdir -p "$(dirname "$FVOCAB")"
+  curl -fsSL -o "$FVOCAB" https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main/vocab.json
+  echo "$FVOCAB_SHA  $FVOCAB" | sha256sum -c --status || { echo "Florence vocab checksum mismatch"; rm -f "$FVOCAB"; exit 1; }
+  echo "Florence vocab ready"
+fi

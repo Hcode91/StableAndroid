@@ -363,6 +363,23 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
         findViewById<Button>(R.id.btnPresets).setOnClickListener { if (!busy) showPresets() }
+        findViewById<Button>(R.id.btnDescribe).setOnClickListener { if (!busy) startDescribe() }
+        findViewById<Button>(R.id.btnDescribeFiles).setOnClickListener {
+            if (busy) return@setOnClickListener
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            }
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, REQ_DESCRIBE_FILES)
+        }
+        findViewById<Button>(R.id.btnDescribeRemove).setOnClickListener {
+            if (busy) return@setOnClickListener
+            Describer.remove(this)
+            appendLog("Describe model files removed.")
+            updateUi()
+        }
         findViewById<Button>(R.id.btnSavePreset).setOnClickListener { if (!busy) askSavePreset() }
         findViewById<Button>(R.id.btnChooseLora).setOnClickListener { pickFile(REQ_LORA) }
         findViewById<Button>(R.id.btnInstallDriver).setOnClickListener { if (!busy) pickFile(REQ_DRIVER) }
@@ -483,9 +500,22 @@ class MainActivity : Activity() {
     @Deprecated("Activity result API without AndroidX")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode == RESULT_OK && requestCode == REQ_DESCRIBE_FILES && data != null) {
+            val uris = mutableListOf<Uri>()
+            data.clipData?.let { c -> for (i in 0 until c.itemCount) uris += c.getItemAt(i).uri }
+            if (uris.isEmpty()) data.data?.let { uris += it }
+            installDescribeFiles(uris)
+            return
+        }
         val uri = data?.data
         if (resultCode != RESULT_OK || uri == null) return
         when (requestCode) {
+            REQ_DESCRIBE_IMAGE -> thread {
+                try {
+                    val bmp = ImageOps.load(contentResolver, uri, 1024)
+                    ui.post { runDescribe(bmp, recycleAfter = true) }
+                } catch (t: Throwable) { ui.post { toast("Couldn't open image: ${t.message}") } }
+            }
             REQ_IMAGE -> openImage(uri)
             REQ_STYLE_IMAGE -> openStylizeImage(uri)
             REQ_MODEL -> importModel(uri)
@@ -749,6 +779,81 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------- generate
+
+    // ---------------------------------------------------------------- describe (Florence-2)
+
+    private fun installDescribeFiles(uris: List<Uri>) {
+        if (uris.isEmpty() || busy) return
+        setBusy(true, "Copying describe files…")
+        thread(name = "describe-install") {
+            val msg = try { Describer.install(this, uris) } catch (t: Throwable) { "E Describe files: ${t.message}" }
+            ui.post { appendLog(msg); setBusy(false, msg.take(80)); toast(msg) }
+        }
+    }
+
+    private var describeDetail = 1
+
+    private fun startDescribe() {
+        if (!Describer.installed(this)) {
+            toast("Add the describe model first: Model section → Choose describe files")
+            appendLog("Describe needs 4 Florence-2 files (vision_encoder, embed_tokens, encoder_model, decoder_model). " +
+                "Still needed: ${Describer.missing(this).joinToString()}")
+            return
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("How much detail?")
+            .setItems(arrayOf("Short", "Detailed", "Very detailed (paragraph)")) { _, which ->
+                describeDetail = which
+                val src = when (mode) { 0 -> canvas.image; 1 -> stylizeSource; else -> null }
+                if (src != null) runDescribe(src, recycleAfter = false)
+                else {
+                    val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "image/*"
+                    }
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(i, REQ_DESCRIBE_IMAGE)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun runDescribe(image: Bitmap, recycleAfter: Boolean) {
+        if (busy) return
+        val threads = editThreads.text.toString().toIntOrNull() ?: 4
+        val detail = describeDetail
+        // Work on a small private copy so the source can't change underneath us.
+        val scale = 768f / maxOf(image.width, image.height)
+        val copy = Bitmap.createScaledBitmap(image, maxOf(1, (image.width * scale).toInt()),
+            maxOf(1, (image.height * scale).toInt()), true).let {
+                if (it === image) image.copy(Bitmap.Config.ARGB_8888, false) else it
+            }
+        if (recycleAfter) image.recycle()
+        setBusy(true, "Describing…")
+        val started = System.currentTimeMillis()
+        thread(name = "describe") {
+            try {
+                val text = Describer.describe(this, copy, detail, threads) { stage -> ui.post { txtStatus.text = stage } }
+                val secs = (System.currentTimeMillis() - started) / 1000.0
+                ui.post {
+                    if (text.isBlank()) {
+                        setBusy(false, "Describe returned nothing")
+                    } else {
+                        val old = editPrompt.text.toString().trim()
+                        if (old.isNotEmpty()) appendLog("Previous prompt: $old")
+                        editPrompt.setText(text)
+                        appendLog("Described in ${"%.1f".format(secs)}s: $text")
+                        setBusy(false, "Description added to the prompt (${"%.0f".format(secs)}s)")
+                    }
+                }
+            } catch (t: Throwable) {
+                ui.post { appendLog("E Describe failed: ${t.message}"); setBusy(false, "Describe failed: ${t.message}") }
+            } finally {
+                copy.recycle()
+            }
+        }
+    }
 
     // ---------------------------------------------------------------- presets (one list per tab)
 
@@ -1298,6 +1403,14 @@ class MainActivity : Activity() {
         if (mode == 2) canvas.previewHint = "Type a prompt and tap Create"
         btnCancel.isEnabled = busy && loaded
         btnLoadModel.isEnabled = !busy && modelFile != null
+        findViewById<TextView>(R.id.txtDescribe).text = Describer.missing(this).let { m ->
+            when (m.size) {
+                0 -> "Describe model: ready (Florence-2)"
+                4 -> "Describe model: not installed (needs 4 Florence-2 .onnx files)"
+                else -> "Describe model: still needs ${m.joinToString()}"
+            }
+        }
+        findViewById<Button>(R.id.btnDescribe).text = if (mode == 2) "Describe an image" else "Describe image"
         findViewById<TextView>(R.id.txtDriver).text = GpuDriver.installed(this)?.let {
             "GPU driver: ${it.name}" + when {
                 customDriverActive -> " (active)"
@@ -1451,5 +1564,7 @@ class MainActivity : Activity() {
         private const val REQ_STYLE_IMAGE = 3
         private const val REQ_LORA = 4
         private const val REQ_DRIVER = 5
+        private const val REQ_DESCRIBE_FILES = 6
+        private const val REQ_DESCRIBE_IMAGE = 7
     }
 }

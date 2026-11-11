@@ -6,3 +6,4 @@ local.properties
 *.iml
 third_party/
 app/src/main/assets/taesd.safetensors
+app/src/main/assets/florence_vocab.json

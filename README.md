@@ -42,6 +42,16 @@ Text to image: type a prompt, pick a **Size**, optionally a Style preset, and ta
 Use a normal SD 1.5 checkpoint here; inpainting checkpoints are made for editing and give weaker
 results from text alone.
 
+### Describe image
+
+**Describe image** (next to the prompt) writes a description of a picture into the prompt box
+using Florence-2, on the device. In Inpaint and Img2Img it describes the open photo; in Text it
+asks for a picture. It needs four model files from
+[onnx-community/Florence-2-base-ft](https://huggingface.co/onnx-community/Florence-2-base-ft/tree/main/onnx)
+(about 275 MB together), picked once under **Model → Choose describe files**:
+`vision_encoder_quantized.onnx`, `embed_tokens_quantized.onnx`, `encoder_model_quantized.onnx`
+and `decoder_model_quantized.onnx`.
+
 ### Presets
 
 Each tab has its own presets. **Save settings** stores the current sampler, scheduler, steps, CFG,

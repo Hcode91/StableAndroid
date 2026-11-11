@@ -31,6 +31,7 @@ jobs:
           path: |
             third_party
             app/src/main/assets/taesd.safetensors
+            app/src/main/assets/florence_vocab.json
           key: thirdparty-${{ hashFiles('scripts/fetch_sdcpp.sh') }}
 
       - name: Fetch stable-diffusion.cpp and Vulkan headers
