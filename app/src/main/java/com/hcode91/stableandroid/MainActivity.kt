@@ -103,6 +103,7 @@ class MainActivity : Activity() {
     private lateinit var chkGpuSafe: CheckBox
     private lateinit var chkFastVae: CheckBox
     private var loadedWithTae = false
+    private var loadedIsInpaint = false
     private lateinit var spinStyle: Spinner
     private lateinit var btnTabInpaint: Button
     private lateinit var btnTabCreate: Button
@@ -701,6 +702,7 @@ class MainActivity : Activity() {
                 if (fastVae && taesd == null) ui.post { appendLog("Fast VAE file missing from this build; using the normal VAE.") }
                 val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap, backend, taesd)
                 loadedWithTae = taesd != null
+                loadedIsInpaint = version.contains("Inpaint", ignoreCase = true)
                 markGpuInFlight(false)
                 loadedBackend = backend
                 val secs = (System.currentTimeMillis() - started) / 1000
@@ -951,13 +953,20 @@ class MainActivity : Activity() {
                     rgb = ImageOps.rgbBytes(scaled)
                     if (scaled !== source) scaled.recycle()
                     fullMask = ByteArray(w * h) { 255.toByte() }
+                } else if (loadedIsInpaint) {
+                    // Inpainting models can't run from text alone: give them a blank grey
+                    // canvas with everything masked, which is the same as repainting it all.
+                    rgb = ByteArray(w * h * 3) { 127 }
+                    fullMask = ByteArray(w * h) { 255.toByte() }
+                    ui.post { appendLog("Inpainting model in the Text tab: using a blank canvas. A normal SD 1.5 model gives better results here.") }
                 }
                 ui.post {
                     appendLog((if (textMode) "Text to image" else "Img2Img (denoise $strength)") +
                         " $count× ${w}×$h, style ${style.label}, seeds $seed–${seed + count - 1}")
                 }
                 if (loadedBackend != "cpu") markGpuInFlight(true)
-                val out = SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg, strength, seed,
+                val out = SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg,
+                    if (textMode) 1f else strength, seed,
                     sampler, scheduler, clipSkip, tiling, count, loraFile?.absolutePath, loraStrength())
                 markGpuInFlight(false)
                 val frame = w * h * 3
