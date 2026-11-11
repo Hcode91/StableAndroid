@@ -20,6 +20,7 @@ object SdNative {
         flashAttn: Boolean,
         mmap: Boolean,
         backend: String,
+        taesdPath: String?,
     ): String
 
     @JvmStatic external fun freeModel()

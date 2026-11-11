@@ -100,6 +100,8 @@ class MainActivity : Activity() {
     private lateinit var spinWeights: Spinner
     private lateinit var spinCompute: Spinner
     private lateinit var chkGpuSafe: CheckBox
+    private lateinit var chkFastVae: CheckBox
+    private var loadedWithTae = false
     private lateinit var spinStyle: Spinner
     private lateinit var btnTabInpaint: Button
     private lateinit var btnTabCreate: Button
@@ -219,6 +221,7 @@ class MainActivity : Activity() {
         spinWeights = findViewById(R.id.spinWeights)
         spinCompute = findViewById(R.id.spinCompute)
         chkGpuSafe = findViewById(R.id.chkGpuSafe)
+        chkFastVae = findViewById(R.id.chkFastVae)
         spinStyle = findViewById(R.id.spinStyle)
         btnTabInpaint = findViewById(R.id.btnTabInpaint)
         btnTabCreate = findViewById(R.id.btnTabCreate)
@@ -370,6 +373,7 @@ class MainActivity : Activity() {
         chkFlash.isChecked = prefs.getBoolean("flash", true)
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
         chkTiling.isChecked = prefs.getBoolean("tiling", true)
+        chkFastVae.isChecked = prefs.getBoolean("fastVae", true)
         prefs.getString("modelPath", null)?.let { p ->
             val f = File(p)
             if (f.exists()) modelFile = f
@@ -399,6 +403,7 @@ class MainActivity : Activity() {
             .putBoolean("flash", chkFlash.isChecked)
             .putBoolean("mmap", chkMmap.isChecked)
             .putBoolean("tiling", chkTiling.isChecked)
+            .putBoolean("fastVae", chkFastVae.isChecked)
             .putString("modelPath", modelFile?.absolutePath)
             .apply()
     }
@@ -541,6 +546,7 @@ class MainActivity : Activity() {
         val flash = chkFlash.isChecked
         val mmap = chkMmap.isChecked
         val computeMode = (spinCompute.selectedItem as Choice).value
+        val fastVae = chkFastVae.isChecked
         val wantGpu = computeMode != 0
         val name = file.name
         setBusy(true, if (wantGpu) "Loading $name on the GPU…" else "Loading $name…")
@@ -564,14 +570,17 @@ class MainActivity : Activity() {
                         ui.post { appendLog("No usable Vulkan GPU found. Using the CPU instead.") }
                     }
                 }
-                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap, backend)
+                val taesd = if (fastVae) taesdFile()?.absolutePath else null
+                if (fastVae && taesd == null) ui.post { appendLog("Fast VAE file missing from this build; using the normal VAE.") }
+                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap, backend, taesd)
+                loadedWithTae = taesd != null
                 markGpuInFlight(false)
                 loadedBackend = backend
                 val secs = (System.currentTimeMillis() - started) / 1000
                 ui.post {
                     loadedModelName = name
                     val where = if (backend == "cpu") "CPU" else "GPU ${gpuName.ifEmpty { backend }}"
-                    setBusy(false, "Loaded $version on $where in ${secs}s")
+                    setBusy(false, "Loaded $version on $where in ${secs}s" + if (loadedWithTae) " · fast VAE" else "")
                     if (name.contains("lcm", ignoreCase = true) && prefs.getString("autoTuned", null) != name) {
                         prefs.edit().putString("autoTuned", name).apply()
                         spinSampler.setSelection(samplers.indexOfFirst { it.label == "LCM" })
@@ -624,7 +633,7 @@ class MainActivity : Activity() {
         val onlyMasked = (spinArea.selectedItem as Choice).value == 1
         val blend = chkBlend.isChecked
         val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
-        val tiling = chkTiling.isChecked
+        val tiling = chkTiling.isChecked && !loadedWithTae
         val count = (editImages.text.toString().toIntOrNull() ?: 1).coerceIn(1, 8)
         val maskCopy = mask.copy(Bitmap.Config.ALPHA_8, false)
 
@@ -768,7 +777,7 @@ class MainActivity : Activity() {
         val scheduler = (spinScheduler.selectedItem as Choice).value
         val size = (spinSize.selectedItem as Choice).value
         val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
-        val tiling = chkTiling.isChecked
+        val tiling = chkTiling.isChecked && !loadedWithTae
         val count = (editImages.text.toString().toIntOrNull() ?: 1).coerceIn(1, 8)
 
         lastSeed = seed
@@ -1008,6 +1017,19 @@ class MainActivity : Activity() {
                 if (safe) android.system.Os.setenv(f, "1", true) else android.system.Os.unsetenv(f)
             }
         } catch (_: Throwable) { }
+    }
+
+    /** Copies the bundled TAESD weights out of the APK once; null if this build has none. */
+    private fun taesdFile(): File? {
+        val out = File(filesDir, "taesd.safetensors")
+        return try {
+            assets.open("taesd.safetensors").use { input ->
+                if (!out.exists() || out.length() != input.available().toLong()) {
+                    out.outputStream().use { input.copyTo(it) }
+                }
+            }
+            out
+        } catch (_: Throwable) { null }
     }
 
     private fun gpuFailureHint() {

@@ -51,3 +51,15 @@ else
   echo "$VULKAN_SDK_TAG" > "$SH/.tag"
   echo "SPIRV-Headers ready at $VULKAN_SDK_TAG"
 fi
+
+# --- TAESD tiny VAE (MIT, ~10 MB) bundled into the APK as the fast VAE ---------
+TAESD="$ROOT/app/src/main/assets/taesd.safetensors"
+TAESD_SHA="db169d69145ec4ff064e49d99c95fa05d3eb04ee453de35824a6d0f325513549"
+if [ -f "$TAESD" ] && echo "$TAESD_SHA  $TAESD" | sha256sum -c --status; then
+  echo "TAESD already present"
+else
+  mkdir -p "$(dirname "$TAESD")"
+  curl -fsSL -o "$TAESD" https://huggingface.co/madebyollin/taesd/resolve/main/diffusion_pytorch_model.safetensors
+  echo "$TAESD_SHA  $TAESD" | sha256sum -c --status || { echo "TAESD checksum mismatch"; rm -f "$TAESD"; exit 1; }
+  echo "TAESD ready"
+fi

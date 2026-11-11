@@ -141,7 +141,7 @@ Java_com_hcode91_stableandroid_SdNative_physicalCores(JNIEnv*, jclass) {
 JNIEXPORT jstring JNICALL
 Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring jpath, jstring jvae,
                                                   jint threads, jint wtype, jboolean flashAttn,
-                                                  jboolean mmap, jstring jbackend) {
+                                                  jboolean mmap, jstring jbackend, jstring jtaesd) {
     ensure_callbacks();
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (g_ctx) {
@@ -151,11 +151,13 @@ Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring j
     std::string path = jstr(env, jpath);
     std::string vae = jstr(env, jvae);
     std::string backend = jstr(env, jbackend);
+    std::string taesd = jstr(env, jtaesd);
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
     p.model_path = path.c_str();
     if (!vae.empty()) p.vae_path = vae.c_str();
+    if (!taesd.empty()) p.taesd_path = taesd.c_str();  // tiny VAE for fast encode/decode
     if (threads > 0) p.n_threads = threads;
     p.wtype = (wtype < 0) ? SD_TYPE_COUNT : (enum sd_type_t)wtype;
     p.flash_attn = flashAttn;

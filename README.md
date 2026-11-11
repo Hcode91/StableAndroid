@@ -46,6 +46,7 @@ Style models (e.g. an anime SD 1.5 checkpoint) give much stronger results than r
 | Denoise | 1.0 for inpainting checkpoints. With a regular (non-inpainting) SD 1.5 model use ~0.6–0.8. |
 | Weights in memory | **F16** is the default (~2 GB RAM for the UNet+CLIP+VAE). **Q8_0 / Q4_0** quantise at load time to use less RAM and run a bit faster, with some quality loss. |
 | Threads | 4 is usually fastest on phones (the big cores). Try 6–8 on flagships. |
+| Fast VAE (TAESD) | On by default. Uses a tiny bundled VAE to encode/decode in seconds instead of minutes, with slightly softer fine detail. Untick and tap **Load** for the model's full VAE. |
 | Memory-map file | Lets the OS page the weights from storage instead of copying them. Can lower RAM use; turn it off if loading fails. |
 
 Regular SD 1.5 checkpoints also work (masked img2img), but dedicated inpainting checkpoints

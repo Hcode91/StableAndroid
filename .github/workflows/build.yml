@@ -28,7 +28,9 @@ jobs:
       - name: Cache native dependency sources
         uses: actions/cache@v4
         with:
-          path: third_party
+          path: |
+            third_party
+            app/src/main/assets/taesd.safetensors
           key: thirdparty-${{ hashFiles('scripts/fetch_sdcpp.sh') }}
 
       - name: Fetch stable-diffusion.cpp and Vulkan headers
