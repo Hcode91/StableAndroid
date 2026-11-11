@@ -423,6 +423,7 @@ class MainActivity : Activity() {
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
         chkTiling.isChecked = prefs.getBoolean("tiling", true)
         chkFastVae.isChecked = prefs.getBoolean("fastVae", true)
+        findViewById<CheckBox>(R.id.chkAutoSave).isChecked = prefs.getBoolean("autoSave", true)
         editLoraStrength.setText(prefs.getString("loraStrength", "1.0"))
         prefs.getString("loraPath", null)?.let { p ->
             val f = File(p)
@@ -459,6 +460,7 @@ class MainActivity : Activity() {
             .putBoolean("mmap", chkMmap.isChecked)
             .putBoolean("tiling", chkTiling.isChecked)
             .putBoolean("fastVae", chkFastVae.isChecked)
+            .putBoolean("autoSave", findViewById<CheckBox>(R.id.chkAutoSave).isChecked)
             .putString("modelPath", modelFile?.absolutePath)
             .putString("loraPath", loraFile?.absolutePath)
             .putString("loraStrength", editLoraStrength.text.toString())
@@ -767,6 +769,7 @@ class MainActivity : Activity() {
         stopRequested = false
         btnCancel.text = if (count > 1) "Stop" else "Cancel"
         savePrefs()
+        autoSaved = false
         setBusy(true, "Preparing…")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val started = System.currentTimeMillis()
@@ -928,6 +931,7 @@ class MainActivity : Activity() {
         stopRequested = false
         btnCancel.text = if (count > 1) "Stop" else "Cancel"
         savePrefs()
+        autoSaved = false
         setBusy(true, "Preparing…")
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val started = System.currentTimeMillis()
@@ -977,6 +981,9 @@ class MainActivity : Activity() {
         }
     }
 
+    /** True when the results on screen were already written by auto-save. */
+    private var autoSaved = false
+
     private fun askNotificationPermissionOnce() {
         if (Build.VERSION.SDK_INT < 33 || prefs.getBoolean("askedNotif", false)) return
         prefs.edit().putBoolean("askedNotif", true).apply()
@@ -988,11 +995,22 @@ class MainActivity : Activity() {
 
     /** If the app isn't on screen when a run finishes, save the results so they can't be lost. */
     private fun autoSaveIfHidden(images: List<Bitmap>) {
-        if (visible || images.isEmpty()) return
+        val always = findViewById<CheckBox>(R.id.chkAutoSave).isChecked
+        if ((visible && !always) || images.isEmpty()) return
         val copies = images.map { it.copy(Bitmap.Config.ARGB_8888, false) }
-        appendLog("Finished in the background: saving ${copies.size} image(s) to Pictures/StableAndroid")
         thread {
-            copies.forEach { try { writePng(it) } catch (_: Throwable) { }; it.recycle() }
+            var saved = 0
+            var error: String? = null
+            copies.forEach {
+                try { writePng(it); saved++ } catch (t: Throwable) { error = t.message }
+                it.recycle()
+            }
+            ui.post {
+                appendLog(if (error == null) "Saved $saved image(s) to Pictures/StableAndroid"
+                    else "E Auto-save: $saved of ${copies.size} saved (${error})")
+                autoSaved = error == null
+                updateUi()
+            }
         }
     }
 
@@ -1115,6 +1133,7 @@ class MainActivity : Activity() {
         } ?: ("GPU driver: system" + if (customDriverActive) " (restart the app to apply)" else "")
         txtLora.text = loraFile?.let { "LoRA: ${it.name}" } ?: "LoRA: none (optional add-on, e.g. an LCM LoRA for 4–8 step runs)"
         btnSave.isEnabled = !busy && currentResult() != null
+        btnSave.text = if (autoSaved && currentResult() != null) "Saved ✓ (save again)" else "Save"
         btnUseResult.isEnabled = !busy && currentResult() != null
         btnToggle.isEnabled = canvas.result != null
         btnToggle.text = if (canvas.showResult) "Original" else "Result"
