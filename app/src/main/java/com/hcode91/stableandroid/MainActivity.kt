@@ -372,10 +372,18 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.btnClearLora).setOnClickListener {
             if (busy || loraFile == null) return@setOnClickListener
+            val removedLcm = loraFile?.name?.contains("lcm", ignoreCase = true) == true
             loraFile?.delete()
             loraFile = null
             savePrefs()
-            appendLog("LoRA removed. If it was an LCM LoRA, set Steps back to about 20 and CFG to 6–7.")
+            if (!removedLcm) {
+                appendLog("LoRA removed.")
+            } else if (isLcmSetup()) {
+                appendLog("LoRA removed. The loaded model is an LCM model, so keep LCM, about 6 steps and CFG 1.0.")
+            } else {
+                applyNormalSettings()
+                appendLog("LoRA removed. Settings switched to Euler a, 20 steps, CFG 7 for a normal model.")
+            }
             updateUi()
         }
         findViewById<Button>(R.id.btnCopyLog).setOnClickListener {
@@ -740,10 +748,70 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- generate
 
+    /** True when the loaded model or the chosen LoRA is an LCM one (judged by file name). */
+    private fun isLcmSetup() = loadedModelName?.contains("lcm", ignoreCase = true) == true ||
+        loraFile?.name?.contains("lcm", ignoreCase = true) == true
+
+    private fun applyLcmSettings() {
+        spinSampler.setSelection(samplers.indexOfFirst { it.label == "LCM" })
+        spinScheduler.setSelection(0)
+        editSteps.setText("6")
+        editCfg.setText("1.0")
+    }
+
+    private fun applyNormalSettings() {
+        spinSampler.setSelection(samplers.indexOfFirst { it.label == "Euler a" })
+        spinScheduler.setSelection(0)
+        editSteps.setText("20")
+        editCfg.setText("7")
+    }
+
+    /** One line describing the sampling settings, for the log. */
+    private fun settingsLine(): String =
+        "sampler ${(spinSampler.selectedItem as Choice).label}, scheduler ${(spinScheduler.selectedItem as Choice).label}, " +
+            "steps ${editSteps.text}, CFG ${editCfg.text}, LoRA " +
+            (loraFile?.let { "${it.name} @ ${loraStrength()}" } ?: "none")
+
+    /**
+     * Catches the two mismatches that waste a long run: the LCM sampler without an LCM
+     * model/LoRA, and normal settings with one. Returns true if a dialog was shown.
+     */
+    private fun warnOnSettingsMismatch(run: () -> Unit): Boolean {
+        val lcmSampler = (spinSampler.selectedItem as Choice).label == "LCM"
+        val steps = editSteps.text.toString().toIntOrNull() ?: 20
+        val cfg = editCfg.text.toString().toFloatOrNull() ?: 7f
+        val lcm = isLcmSetup()
+        // A LoRA whose name doesn't say what it is might be an LCM one: don't second-guess it.
+        val unknownLora = loraFile != null && !lcm
+        val (message, fix) = when {
+            lcmSampler && !lcm && !unknownLora ->
+                "The LCM sampler only works with an LCM model or the LCM LoRA, and neither is in use. " +
+                    "Results will be poor.\n\nSwitch to Euler a, 20 steps, CFG 7? (Slower, but correct for this model. " +
+                    "Or cancel and add the LCM LoRA.)" to { applyNormalSettings() }
+            lcm && (!lcmSampler || cfg > 2.5f || steps > 12) ->
+                "An LCM model or LoRA is in use, but the settings are for a normal model " +
+                    "(sampler ${(spinSampler.selectedItem as Choice).label}, $steps steps, CFG $cfg). " +
+                    "That is much slower and usually gives burnt images.\n\nSwitch to LCM, 6 steps, CFG 1.0?" to { applyLcmSettings() }
+            else -> return false
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Settings don't match the model")
+            .setMessage(message)
+            .setPositiveButton("Fix and run") { _, _ -> fix(); skipSettingsCheck = true; run() }
+            .setNeutralButton("Run anyway") { _, _ -> skipSettingsCheck = true; run() }
+            .setNegativeButton("Cancel", null)
+            .show()
+        return true
+    }
+
+    private var skipSettingsCheck = false
+
     private fun generate() {
         if (mode != 0) { create(); return }
         if (busy) return
         if (loadedModelName == null) { toast("Load a model first"); return }
+        if (!skipSettingsCheck && warnOnSettingsMismatch { generate() }) return
+        skipSettingsCheck = false
         val image = canvas.image ?: run { toast("Open an image first"); return }
         val mask = canvas.mask ?: return
         // If a result is showing, inpaint on top of the original again.
@@ -782,7 +850,7 @@ class MainActivity : Activity() {
                     ?: throw IllegalStateException("Paint a mask over the area you want to change first")
                 ui.post {
                     appendLog("Inpainting $count× ${job.width}×${job.height} from region " +
-                        "${job.region.toShortString()}, seeds $seed–${seed + count - 1}")
+                        "${job.region.toShortString()}, denoise $strength, seeds $seed–${seed + count - 1}\n  " + settingsLine())
                 }
                 if (loadedBackend != "cpu") markGpuInFlight(true)
                 val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, prompt, negative,
@@ -905,6 +973,8 @@ class MainActivity : Activity() {
     private fun create() {
         if (busy) return
         if (loadedModelName == null) { toast("Load a model first"); return }
+        if (!skipSettingsCheck && warnOnSettingsMismatch { create() }) return
+        skipSettingsCheck = false
         val textMode = mode == 2
         val source = if (textMode) null else (stylizeSource ?: run { toast("Tap Photo to choose a picture first"); return })
         val style = spinStyle.selectedItem as Style
@@ -962,7 +1032,7 @@ class MainActivity : Activity() {
                 }
                 ui.post {
                     appendLog((if (textMode) "Text to image" else "Img2Img (denoise $strength)") +
-                        " $count× ${w}×$h, style ${style.label}, seeds $seed–${seed + count - 1}")
+                        " $count× ${w}×$h, style ${style.label}, seeds $seed–${seed + count - 1}\n  " + settingsLine())
                 }
                 if (loadedBackend != "cpu") markGpuInFlight(true)
                 val out = SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg,
