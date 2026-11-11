@@ -42,6 +42,13 @@ Text to image: type a prompt, pick a **Size**, optionally a Style preset, and ta
 Use a normal SD 1.5 checkpoint here; inpainting checkpoints are made for editing and give weaker
 results from text alone.
 
+### Sharpen faces
+
+In the Text and Img2Img tabs, **Sharpen faces** enlarges each result ×2, finds faces with Android's
+built-in face detector and redraws each one at full working size (denoise 0.45), which fixes the
+smeared eyes SD 1.5 gives small faces. It adds roughly one extra pass per face. Faces in profile
+or very small faces may not be found; the image is then only enlarged.
+
 ### Describe image
 
 **Describe image** (next to the prompt) writes a description of a picture into the prompt box

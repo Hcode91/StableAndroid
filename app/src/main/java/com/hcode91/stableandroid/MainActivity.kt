@@ -451,6 +451,7 @@ class MainActivity : Activity() {
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
         chkTiling.isChecked = prefs.getBoolean("tiling", true)
         chkFastVae.isChecked = prefs.getBoolean("fastVae", true)
+        findViewById<CheckBox>(R.id.chkSharpen).isChecked = prefs.getBoolean("sharpen", false)
         findViewById<CheckBox>(R.id.chkAutoSave).isChecked = prefs.getBoolean("autoSave", true)
         editLoraStrength.setText(prefs.getString("loraStrength", "1.0"))
         prefs.getString("loraPath", null)?.let { p ->
@@ -488,6 +489,7 @@ class MainActivity : Activity() {
             .putBoolean("mmap", chkMmap.isChecked)
             .putBoolean("tiling", chkTiling.isChecked)
             .putBoolean("fastVae", chkFastVae.isChecked)
+            .putBoolean("sharpen", findViewById<CheckBox>(R.id.chkSharpen).isChecked)
             .putBoolean("autoSave", findViewById<CheckBox>(R.id.chkAutoSave).isChecked)
             .putString("modelPath", modelFile?.absolutePath)
             .putString("loraPath", loraFile?.absolutePath)
@@ -1156,6 +1158,7 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.btnStylePhoto).visibility = if (text) View.GONE else View.VISIBLE
         chkBlend.visibility = inpaintVis
         findViewById<View>(R.id.rowCreate).visibility = if (create) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.chkSharpen).visibility = if (create) View.VISIBLE else View.GONE
         btnGenerate.text = when (mode) { 0 -> "Inpaint"; 1 -> "Generate"; else -> "Create" }
         btnUseResult.text = if (create) "Edit in Inpaint" else "Keep & continue"
         editPrompt.hint = when (mode) {
@@ -1183,6 +1186,7 @@ class MainActivity : Activity() {
             toast(if (textMode) "Describe the image first" else "Pick a style or describe the result"); return
         }
         val (txtW, txtH) = txtDims[(spinTxtSize.selectedItem as Choice).value]
+        val sharpen = findViewById<CheckBox>(R.id.chkSharpen).isChecked
         val prompt = listOf(style.tags, userPrompt).filter { it.isNotEmpty() }.joinToString(", ")
         val negative = listOf(editNegative.text.toString().trim(), style.negative)
             .filter { it.isNotEmpty() }.joinToString(", ")
@@ -1241,7 +1245,16 @@ class MainActivity : Activity() {
                 markGpuInFlight(false)
                 val frame = w * h * 3
                 val n = out.size / frame
-                val imgs = (0 until n).map { ImageOps.fromRgb(out, w, h, it * frame) }
+                var imgs = (0 until n).map { ImageOps.fromRgb(out, w, h, it * frame) }
+                if (sharpen) {
+                    imgs = imgs.mapIndexed { k, img ->
+                        val better = sharpenFaces(img, k + 1, n, prompt, negative, steps, cfg, seed + k,
+                            sampler, scheduler, clipSkip, tiling)
+                        if (better !== img) img.recycle()
+                        better
+                    }
+                    statusPrefix = ""
+                }
                 val secs = (System.currentTimeMillis() - started) / 1000.0
                 ui.post {
                     clearCreateResults()
@@ -1309,6 +1322,61 @@ class MainActivity : Activity() {
         resolver.update(uri, values, null, null)
     }
 
+    @Volatile private var statusPrefix = ""
+
+    /**
+     * Enlarges [img] ×2, finds faces with Android's built-in detector and redraws each one at
+     * full working size, so eyes and features get far more pixels. Runs on the worker thread.
+     * Returns the enlarged image (with or without redrawn faces); never throws.
+     */
+    private fun sharpenFaces(img: Bitmap, index: Int, total: Int, prompt: String, negative: String,
+                             steps: Int, cfg: Float, seed: Long, sampler: Int, scheduler: Int,
+                             clipSkip: Int, tiling: Boolean): Bitmap {
+        val bw = (img.width * 2) and 1.inv()
+        val bh = img.height * 2
+        var big = Bitmap.createScaledBitmap(img, bw, bh, true)
+        try {
+            val probe = big.copy(Bitmap.Config.RGB_565, false)
+            val found = arrayOfNulls<android.media.FaceDetector.Face>(4)
+            val count = android.media.FaceDetector(bw, bh, 4).findFaces(probe, found)
+            probe.recycle()
+            val faces = found.take(count).filterNotNull().filter { it.confidence() >= 0.3f }
+            if (faces.isEmpty()) {
+                ui.post { appendLog("Sharpen faces: no face found in image $index, so it was only enlarged.") }
+                return big
+            }
+            faces.forEachIndexed { f, face ->
+                val mid = android.graphics.PointF().also { face.getMidPoint(it) }
+                val eyes = face.eyesDistance()
+                val mask = Bitmap.createBitmap(bw, bh, Bitmap.Config.ALPHA_8)
+                android.graphics.Canvas(mask).drawOval(
+                    mid.x - eyes * 1.5f, mid.y - eyes * 1.6f, mid.x + eyes * 1.5f, mid.y + eyes * 2.2f,
+                    android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = android.graphics.Color.WHITE })
+                val job = ImageOps.prepare(big, mask, true, 512, 32)
+                if (job != null) {
+                    statusPrefix = "Sharpening face ${f + 1}/${faces.size}" +
+                        (if (total > 1) " (image $index/$total)" else "") + " · "
+                    ui.post { appendLog("Sharpen faces: image $index face ${f + 1}, region ${job.region.toShortString()} at ${job.width}×${job.height}") }
+                    if (loadedBackend != "cpu") markGpuInFlight(true)
+                    val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height,
+                        "$prompt, detailed face, sharp detailed eyes", negative, maxOf(steps, 8), cfg, 0.45f, seed,
+                        sampler, scheduler, clipSkip, tiling, 1, loraFile?.absolutePath, loraStrength())
+                    markGpuInFlight(false)
+                    val gen = ImageOps.fromRgb(out, job.width, job.height)
+                    val next = ImageOps.composite(big, mask, job, gen, true)
+                    gen.recycle()
+                    big.recycle()
+                    big = next
+                }
+                mask.recycle()
+            }
+        } catch (t: Throwable) {
+            markGpuInFlight(false)
+            ui.post { appendLog("Sharpen faces stopped: ${t.message}. Keeping the enlarged image.") }
+        }
+        return big
+    }
+
     private fun saveResult() {
         val bmp = currentResult() ?: return
         thread {
@@ -1363,7 +1431,8 @@ class MainActivity : Activity() {
         val p = SdNative.progress()
         val step = p[0]; val total = p[1]; val img = p[2]
         val stage = SdNative.stage()
-        val imgLabel = if (batchSize > 1 && img > 0) "Image ${img.coerceAtMost(batchSize)}/$batchSize · " else ""
+        val imgLabel = if (statusPrefix.isNotEmpty()) statusPrefix
+            else if (batchSize > 1 && img > 0) "Image ${img.coerceAtMost(batchSize)}/$batchSize · " else ""
         if (step > 0 && total > 0) {
             progress.isIndeterminate = false
             progress.max = total

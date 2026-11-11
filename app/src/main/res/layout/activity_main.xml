@@ -277,6 +277,15 @@
                     android:text="Photo" />
             </LinearLayout>
 
+            <CheckBox
+                android:id="@+id/chkSharpen"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="false"
+                android:text="Sharpen faces (enlarge ×2, then redraw each face; slower)"
+                android:textColor="#DDDDDD"
+                android:visibility="gone" />
+
             <!-- Sampling -->
             <LinearLayout
                 android:layout_width="match_parent"
