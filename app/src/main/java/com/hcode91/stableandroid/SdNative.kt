@@ -29,13 +29,13 @@ object SdNative {
     @JvmStatic external fun isLoaded(): Boolean
 
     /**
-     * init: RGB bytes (w*h*3), mask: w*h bytes (255 = repaint).
+     * init: RGB bytes (w*h*3), mask: w*h bytes (255 = repaint). Both null = text-to-image.
      * Generates [batchCount] images (seed, seed+1, ...) and returns their RGB bytes
      * concatenated; fewer if stopped early. Throws on failure/cancel.
      */
     @JvmStatic external fun inpaint(
-        init: ByteArray,
-        mask: ByteArray,
+        init: ByteArray?,
+        mask: ByteArray?,
         width: Int,
         height: Int,
         prompt: String,

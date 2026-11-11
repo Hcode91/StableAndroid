@@ -226,13 +226,18 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
         return nullptr;
     }
     const size_t npx = (size_t)width * (size_t)height;
-    if ((size_t)env->GetArrayLength(jinit) != npx * 3 || (size_t)env->GetArrayLength(jmask) != npx) {
+    // No init image = plain text-to-image.
+    const bool has_init = jinit != nullptr && jmask != nullptr;
+    if (has_init &&
+        ((size_t)env->GetArrayLength(jinit) != npx * 3 || (size_t)env->GetArrayLength(jmask) != npx)) {
         throw_java(env, "Image/mask size mismatch.");
         return nullptr;
     }
     std::vector<uint8_t> init(npx * 3), mask(npx);
-    env->GetByteArrayRegion(jinit, 0, (jsize)init.size(), reinterpret_cast<jbyte*>(init.data()));
-    env->GetByteArrayRegion(jmask, 0, (jsize)mask.size(), reinterpret_cast<jbyte*>(mask.data()));
+    if (has_init) {
+        env->GetByteArrayRegion(jinit, 0, (jsize)init.size(), reinterpret_cast<jbyte*>(init.data()));
+        env->GetByteArrayRegion(jmask, 0, (jsize)mask.size(), reinterpret_cast<jbyte*>(mask.data()));
+    }
 
     std::string prompt = jstr(env, jprompt);
     std::string neg = jstr(env, jneg);
@@ -242,8 +247,10 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
     g.prompt = prompt.c_str();
     g.negative_prompt = neg.c_str();
     g.clip_skip = clipSkip;
-    g.init_image = {(uint32_t)width, (uint32_t)height, 3, init.data()};
-    g.mask_image = {(uint32_t)width, (uint32_t)height, 1, mask.data()};
+    if (has_init) {
+        g.init_image = {(uint32_t)width, (uint32_t)height, 3, init.data()};
+        g.mask_image = {(uint32_t)width, (uint32_t)height, 1, mask.data()};
+    }
     g.width = width;
     g.height = height;
     g.strength = strength;

@@ -108,10 +108,23 @@ class MainActivity : Activity() {
     private lateinit var btnTabCreate: Button
     /** 0 = Inpaint tab, 1 = Stylize tab. */
     private var stylizeSource: Bitmap? = null
-    private var mode = 0
-    private val createResults = mutableListOf<Bitmap>()
-    private val createSeeds = mutableListOf<Long>()
-    private var createIndex = 0
+    private var mode = 0   // 0 = Inpaint, 1 = Img2Img, 2 = Text to image
+    // Img2Img and Text each keep their own results (index = mode).
+    private val galResults = arrayOf(mutableListOf<Bitmap>(), mutableListOf<Bitmap>(), mutableListOf<Bitmap>())
+    private val galSeeds = arrayOf(mutableListOf<Long>(), mutableListOf<Long>(), mutableListOf<Long>())
+    private val galIndex = IntArray(3)
+    private val createResults get() = galResults[mode]
+    private val createSeeds get() = galSeeds[mode]
+    private var createIndex
+        get() = galIndex[mode]
+        set(v) { galIndex[mode] = v }
+    private lateinit var spinTxtSize: Spinner
+    private lateinit var btnTabText: Button
+    private val txtSizes = listOf(
+        Choice("512×512", 0), Choice("384×512 portrait", 1), Choice("512×384 landscape", 2),
+        Choice("512×768 portrait", 3), Choice("768×512 landscape", 4), Choice("384×384 fast", 5),
+    )
+    private val txtDims = listOf(512 to 512, 384 to 512, 512 to 384, 512 to 768, 768 to 512, 384 to 384)
     private var loadedBackend = "cpu"
     private lateinit var chkBlend: CheckBox
     private lateinit var chkFlash: CheckBox
@@ -233,6 +246,8 @@ class MainActivity : Activity() {
         spinStyle = findViewById(R.id.spinStyle)
         btnTabInpaint = findViewById(R.id.btnTabInpaint)
         btnTabCreate = findViewById(R.id.btnTabCreate)
+        btnTabText = findViewById(R.id.btnTabText)
+        spinTxtSize = findViewById(R.id.spinTxtSize)
         chkBlend = findViewById(R.id.chkBlend)
         chkFlash = findViewById(R.id.chkFlash)
         chkMmap = findViewById(R.id.chkMmap)
@@ -270,6 +285,7 @@ class MainActivity : Activity() {
         spinWeights.adapter = adapter(weightTypes)
         spinCompute.adapter = adapter(computes)
         spinStyle.adapter = adapter(styles)
+        spinTxtSize.adapter = adapter(txtSizes)
     }
 
     private fun setupListeners() {
@@ -316,10 +332,11 @@ class MainActivity : Activity() {
         canvas.onSwipe = { dir -> showResultAt(currentIndex() + dir) }
         btnTabInpaint.setOnClickListener { switchMode(0) }
         btnTabCreate.setOnClickListener { switchMode(1) }
+        btnTabText.setOnClickListener { switchMode(2) }
         findViewById<Button>(R.id.btnStylePhoto).setOnClickListener { pickImage(REQ_STYLE_IMAGE) }
         btnSave.setOnClickListener { saveResult() }
         btnUseResult.setOnClickListener {
-            if (mode == 1) {
+            if (mode != 0) {
                 val bmp = createResults.getOrNull(createIndex) ?: return@setOnClickListener
                 val copy = bmp.copy(Bitmap.Config.ARGB_8888, true)
                 switchMode(0)
@@ -339,7 +356,7 @@ class MainActivity : Activity() {
             }
         }
         btnLastSeed.setOnClickListener {
-            val s = (if (mode == 1) createSeeds.getOrNull(createIndex) else resultSeeds.getOrNull(resultIndex)) ?: lastSeed
+            val s = (if (mode != 0) createSeeds.getOrNull(createIndex) else resultSeeds.getOrNull(resultIndex)) ?: lastSeed
             if (s >= 0) editSeed.setText(s.toString())
         }
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
@@ -400,6 +417,7 @@ class MainActivity : Activity() {
             toast("Close and reopen the app for this to take effect")
         }
         spinStyle.setSelection(prefs.getInt("style", 1))
+        spinTxtSize.setSelection(prefs.getInt("txtSize", 0))
         chkBlend.isChecked = prefs.getBoolean("blend", true)
         chkFlash.isChecked = prefs.getBoolean("flash", true)
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
@@ -434,6 +452,7 @@ class MainActivity : Activity() {
             .putInt("weights", spinWeights.selectedItemPosition)
             .putInt("compute", spinCompute.selectedItemPosition)
             .putInt("style", spinStyle.selectedItemPosition)
+            .putInt("txtSize", spinTxtSize.selectedItemPosition)
             .putInt("mode", mode)
             .putBoolean("blend", chkBlend.isChecked)
             .putBoolean("flash", chkFlash.isChecked)
@@ -489,7 +508,10 @@ class MainActivity : Activity() {
         } else {
             @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_STREAM)
         }
-        uri?.let { if (mode == 1) openStylizeImage(it) else openImage(it) }
+        uri?.let {
+            if (mode == 2) switchMode(0)
+            if (mode == 1) openStylizeImage(it) else openImage(it)
+        }
     }
 
     private fun openStylizeImage(uri: Uri) {
@@ -501,7 +523,7 @@ class MainActivity : Activity() {
                     stylizeSource = bmp
                     clearCreateResults()
                     refreshStylizePreview()
-                    txtStatus.text = "Photo ${bmp.width}×${bmp.height}. Pick a style and tap Stylize."
+                    txtStatus.text = "Photo ${bmp.width}×${bmp.height}. Describe the change or pick a style, then tap Generate."
                     updateUi()
                 }
             } catch (t: Throwable) {
@@ -518,9 +540,11 @@ class MainActivity : Activity() {
 
     /** Stylize tab: show the current result (hold to see the photo), or the photo itself. */
     private fun refreshStylizePreview() {
+        if (mode == 0) return
         val res = createResults.getOrNull(createIndex)
-        canvas.preview = res ?: stylizeSource
-        canvas.previewOriginal = if (res != null) stylizeSource else null
+        val src = if (mode == 1) stylizeSource else null
+        canvas.preview = res ?: src
+        canvas.previewOriginal = if (res != null) src else null
     }
 
     private fun openImage(uri: Uri) {
@@ -713,7 +737,7 @@ class MainActivity : Activity() {
     // ---------------------------------------------------------------- generate
 
     private fun generate() {
-        if (mode == 1) { create(); return }
+        if (mode != 0) { create(); return }
         if (busy) return
         if (loadedModelName == null) { toast("Load a model first"); return }
         val image = canvas.image ?: run { toast("Open an image first"); return }
@@ -794,13 +818,13 @@ class MainActivity : Activity() {
         results.clear(); resultSeeds.clear(); resultIndex = 0
     }
 
-    private fun currentIndex() = if (mode == 1) createIndex else resultIndex
+    private fun currentIndex() = if (mode != 0) createIndex else resultIndex
 
     private fun currentResult(): Bitmap? =
-        if (mode == 1) createResults.getOrNull(createIndex) else canvas.result
+        if (mode != 0) createResults.getOrNull(createIndex) else canvas.result
 
     private fun showResultAt(i: Int) {
-        if (mode == 1) {
+        if (mode != 0) {
             if (createResults.isEmpty()) return
             createIndex = ((i % createResults.size) + createResults.size) % createResults.size
             refreshStylizePreview()
@@ -814,8 +838,8 @@ class MainActivity : Activity() {
         updateUi()
     }
 
-    private fun promptKey(m: Int) = if (m == 0) "prompt" else "prompt_create"
-    private fun negativeKey(m: Int) = if (m == 0) "negative" else "negative_create"
+    private fun promptKey(m: Int) = when (m) { 0 -> "prompt"; 1 -> "prompt_create"; else -> "prompt_text" }
+    private fun negativeKey(m: Int) = when (m) { 0 -> "negative"; 1 -> "negative_create"; else -> "negative_text" }
 
     private fun strengthKey(m: Int) = if (m == 0) "strength" else "strength_stylize"
 
@@ -824,6 +848,10 @@ class MainActivity : Activity() {
         if (m == 0) {
             editPrompt.setText(prefs.getString(promptKey(0), ""))
             editNegative.setText(prefs.getString(negativeKey(0), "blurry, low quality, deformed, watermark, text"))
+        } else if (m == 2) {
+            editPrompt.setText(prefs.getString(promptKey(2), ""))
+            editNegative.setText(prefs.getString(negativeKey(2),
+                "blurry, low quality, deformed, bad anatomy, extra fingers, watermark, text"))
         } else {
             editPrompt.setText(prefs.getString(promptKey(1), ""))
             editNegative.setText(prefs.getString(negativeKey(1),
@@ -841,21 +869,30 @@ class MainActivity : Activity() {
     }
 
     private fun applyMode() {
-        val create = mode == 1
+        val create = mode != 0
+        val text = mode == 2
         canvas.previewMode = create
         if (create) refreshStylizePreview() else { canvas.preview = null; canvas.previewOriginal = null }
         val inpaintVis = if (create) View.GONE else View.VISIBLE
         findViewById<View>(R.id.rowTools).visibility = inpaintVis
         findViewById<View>(R.id.rowBrush).visibility = inpaintVis
         findViewById<View>(R.id.cellArea).visibility = inpaintVis
+        findViewById<View>(R.id.cellWorkSize).visibility = if (text) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.cellStrength).visibility = if (text) View.GONE else View.VISIBLE
+        findViewById<View>(R.id.cellTxtSize).visibility = if (text) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.btnStylePhoto).visibility = if (text) View.GONE else View.VISIBLE
         chkBlend.visibility = inpaintVis
         findViewById<View>(R.id.rowCreate).visibility = if (create) View.VISIBLE else View.GONE
-        btnGenerate.text = if (create) "Stylize" else "Inpaint"
+        btnGenerate.text = when (mode) { 0 -> "Inpaint"; 1 -> "Generate"; else -> "Create" }
         btnUseResult.text = if (create) "Edit in Inpaint" else "Keep & continue"
-        editPrompt.hint = if (create) "optional: describe the photo, e.g. a man with a beard in a red jacket"
-            else "what should appear in the masked area"
-        btnTabInpaint.alpha = if (create) 0.5f else 1f
-        btnTabCreate.alpha = if (create) 1f else 0.5f
+        editPrompt.hint = when (mode) {
+            0 -> "what should appear in the masked area"
+            1 -> "what the photo should become, e.g. a man with a beard in a red jacket, oil painting"
+            else -> "describe the image, e.g. a lighthouse on a cliff at sunset, dramatic clouds"
+        }
+        btnTabInpaint.alpha = if (mode == 0) 1f else 0.5f
+        btnTabCreate.alpha = if (mode == 1) 1f else 0.5f
+        btnTabText.alpha = if (mode == 2) 1f else 0.5f
         updateUi()
     }
 
@@ -863,10 +900,14 @@ class MainActivity : Activity() {
     private fun create() {
         if (busy) return
         if (loadedModelName == null) { toast("Load a model first"); return }
-        val source = stylizeSource ?: run { toast("Tap Photo to choose a picture first"); return }
+        val textMode = mode == 2
+        val source = if (textMode) null else (stylizeSource ?: run { toast("Tap Photo to choose a picture first"); return })
         val style = spinStyle.selectedItem as Style
         val userPrompt = editPrompt.text.toString().trim()
-        if (userPrompt.isEmpty() && style.tags.isEmpty()) { toast("Pick a style or describe the result"); return }
+        if (userPrompt.isEmpty() && (textMode || style.tags.isEmpty())) {
+            toast(if (textMode) "Describe the image first" else "Pick a style or describe the result"); return
+        }
+        val (txtW, txtH) = txtDims[(spinTxtSize.selectedItem as Choice).value]
         val prompt = listOf(style.tags, userPrompt).filter { it.isNotEmpty() }.joinToString(", ")
         val negative = listOf(editNegative.text.toString().trim(), style.negative)
             .filter { it.isNotEmpty() }.joinToString(", ")
@@ -894,14 +935,23 @@ class MainActivity : Activity() {
         thread(name = "sd-stylize") {
             try {
                 // Whole photo scaled so its long side is about the working size (multiples of 64).
-                val scale = size.toFloat() / maxOf(source.width, source.height)
-                val w = maxOf(64, Math.round(source.width * scale / 64f) * 64)
-                val h = maxOf(64, Math.round(source.height * scale / 64f) * 64)
-                val scaled = Bitmap.createScaledBitmap(source, w, h, true)
-                val rgb = ImageOps.rgbBytes(scaled)
-                if (scaled !== source) scaled.recycle()
-                val fullMask = ByteArray(w * h) { 255.toByte() }
-                ui.post { appendLog("Stylizing $count× ${w}×$h (${style.label}, denoise $strength), seeds $seed–${seed + count - 1}") }
+                var w = txtW
+                var h = txtH
+                var rgb: ByteArray? = null
+                var fullMask: ByteArray? = null
+                if (source != null) {
+                    val scale = size.toFloat() / maxOf(source.width, source.height)
+                    w = maxOf(64, Math.round(source.width * scale / 64f) * 64)
+                    h = maxOf(64, Math.round(source.height * scale / 64f) * 64)
+                    val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+                    rgb = ImageOps.rgbBytes(scaled)
+                    if (scaled !== source) scaled.recycle()
+                    fullMask = ByteArray(w * h) { 255.toByte() }
+                }
+                ui.post {
+                    appendLog((if (textMode) "Text to image" else "Img2Img (denoise $strength)") +
+                        " $count× ${w}×$h, style ${style.label}, seeds $seed–${seed + count - 1}")
+                }
                 if (loadedBackend != "cpu") markGpuInFlight(true)
                 val out = SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg, strength, seed,
                     sampler, scheduler, clipSkip, tiling, count, loraFile?.absolutePath, loraStrength())
@@ -916,7 +966,7 @@ class MainActivity : Activity() {
                     autoSaveIfHidden(imgs)
                     createSeeds += (0 until n).map { seed + it }
                     setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
-                    if (mode == 1) showResultAt(0) else updateUi()
+                    showResultAt(0)
                 }
             } catch (t: Throwable) {
                 markGpuInFlight(false)
@@ -1044,10 +1094,16 @@ class MainActivity : Activity() {
             modelFile != null -> "Ready: ${modelFile!!.name} (${ModelStore.gb(modelFile!!.length())}, not loaded)"
             else -> "No .safetensors chosen. Use an SD 1.5 inpainting checkpoint for best results."
         }
-        btnGenerate.isEnabled = !busy && loaded && (if (mode == 1) stylizeSource != null else canvas.image != null)
+        btnGenerate.isEnabled = !busy && loaded && when (mode) {
+            0 -> canvas.image != null
+            1 -> stylizeSource != null
+            else -> true
+        }
+        btnTabText.isEnabled = !busy
         btnTabInpaint.isEnabled = !busy
         btnTabCreate.isEnabled = !busy
-        if (mode == 1) canvas.previewHint = "Tap Photo to choose a picture to stylize"
+        if (mode == 1) canvas.previewHint = "Tap Photo to choose a picture to transform"
+        if (mode == 2) canvas.previewHint = "Type a prompt and tap Create"
         btnCancel.isEnabled = busy && loaded
         btnLoadModel.isEnabled = !busy && modelFile != null
         findViewById<TextView>(R.id.txtDriver).text = GpuDriver.installed(this)?.let {
@@ -1062,10 +1118,11 @@ class MainActivity : Activity() {
         btnUseResult.isEnabled = !busy && currentResult() != null
         btnToggle.isEnabled = canvas.result != null
         btnToggle.text = if (canvas.showResult) "Original" else "Result"
-        if (mode == 1) {
+        if (mode != 0) {
             rowResults.visibility = if (createResults.isNotEmpty()) View.VISIBLE else View.GONE
             if (createResults.isNotEmpty()) {
-                txtResult.text = "Result ${createIndex + 1}/${createResults.size} · seed ${createSeeds[createIndex]} · hold to compare"
+                txtResult.text = "Result ${createIndex + 1}/${createResults.size} · seed ${createSeeds[createIndex]}" +
+                    if (mode == 1) " · hold to compare" else ""
             }
         } else rowResults.visibility = if (results.isNotEmpty()) View.VISIBLE else View.GONE
         if (mode == 0 && results.isNotEmpty()) {

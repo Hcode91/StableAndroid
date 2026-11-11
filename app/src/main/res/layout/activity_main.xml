@@ -20,7 +20,12 @@
         <Button
             android:id="@+id/btnTabCreate"
             style="@style/TabBtn"
-            android:text="Stylize" />
+            android:text="Img2Img" />
+
+        <Button
+            android:id="@+id/btnTabText"
+            style="@style/TabBtn"
+            android:text="Text" />
     </LinearLayout>
 
     <com.hcode91.stableandroid.MaskCanvasView
@@ -212,6 +217,14 @@
                     <Spinner android:id="@+id/spinStyle" style="@style/Spin" />
                 </LinearLayout>
 
+                <LinearLayout
+                    android:id="@+id/cellTxtSize"
+                    style="@style/Cell"
+                    android:visibility="gone">
+                    <TextView style="@style/Label" android:text="Size" />
+                    <Spinner android:id="@+id/spinTxtSize" style="@style/Spin" />
+                </LinearLayout>
+
                 <Button
                     android:id="@+id/btnStylePhoto"
                     android:layout_width="wrap_content"
@@ -286,7 +299,7 @@
                 android:layout_height="wrap_content"
                 android:orientation="horizontal">
 
-                <LinearLayout style="@style/Cell">
+                <LinearLayout android:id="@+id/cellWorkSize" style="@style/Cell">
                     <TextView style="@style/Label" android:text="Working size" />
                     <Spinner android:id="@+id/spinSize" style="@style/Spin" />
                 </LinearLayout>
