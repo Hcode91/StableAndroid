@@ -42,6 +42,12 @@ Text to image: type a prompt, pick a **Size**, optionally a Style preset, and ta
 Use a normal SD 1.5 checkpoint here; inpainting checkpoints are made for editing and give weaker
 results from text alone.
 
+### Presets
+
+Each tab has its own presets. **Save settings** stores the current sampler, scheduler, steps, CFG,
+denoise, size, style, image count and negative prompt under a name; **Presets** lists them to
+apply or delete. The prompt itself is not stored.
+
 ### Settings worth knowing
 
 | Setting | What it does |

@@ -362,6 +362,8 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
+        findViewById<Button>(R.id.btnPresets).setOnClickListener { if (!busy) showPresets() }
+        findViewById<Button>(R.id.btnSavePreset).setOnClickListener { if (!busy) askSavePreset() }
         findViewById<Button>(R.id.btnChooseLora).setOnClickListener { pickFile(REQ_LORA) }
         findViewById<Button>(R.id.btnInstallDriver).setOnClickListener { if (!busy) pickFile(REQ_DRIVER) }
         findViewById<Button>(R.id.btnRemoveDriver).setOnClickListener {
@@ -747,6 +749,99 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------- generate
+
+    // ---------------------------------------------------------------- presets (one list per tab)
+
+    private fun tabName() = when (mode) { 0 -> "Inpaint"; 1 -> "Img2Img"; else -> "Text" }
+
+    private fun presetStore(): org.json.JSONObject =
+        try { org.json.JSONObject(prefs.getString("presets_$mode", "{}") ?: "{}") }
+        catch (_: Throwable) { org.json.JSONObject() }
+
+    private fun presetNames() = presetStore().keys().asSequence().sortedBy { it.lowercase() }.toList()
+
+    private fun currentSettings() = org.json.JSONObject().apply {
+        put("negative", editNegative.text.toString())
+        put("sampler", spinSampler.selectedItemPosition)
+        put("scheduler", spinScheduler.selectedItemPosition)
+        put("steps", editSteps.text.toString())
+        put("cfg", editCfg.text.toString())
+        put("images", editImages.text.toString())
+        put("clipSkip", editClipSkip.text.toString())
+        put("style", spinStyle.selectedItemPosition)
+        if (mode != 2) {
+            put("strength", editStrength.text.toString())
+            put("size", spinSize.selectedItemPosition)
+        } else {
+            put("txtSize", spinTxtSize.selectedItemPosition)
+        }
+        if (mode == 0) {
+            put("area", spinArea.selectedItemPosition)
+            put("blend", chkBlend.isChecked)
+        }
+    }
+
+    private fun applySettings(j: org.json.JSONObject) {
+        fun sel(sp: Spinner, key: String) {
+            if (j.has(key)) sp.setSelection(j.getInt(key).coerceIn(0, sp.count - 1))
+        }
+        fun txt(e: EditText, key: String) { if (j.has(key)) e.setText(j.getString(key)) }
+        txt(editNegative, "negative"); txt(editSteps, "steps"); txt(editCfg, "cfg")
+        txt(editImages, "images"); txt(editClipSkip, "clipSkip"); txt(editStrength, "strength")
+        sel(spinSampler, "sampler"); sel(spinScheduler, "scheduler"); sel(spinStyle, "style")
+        sel(spinSize, "size"); sel(spinTxtSize, "txtSize"); sel(spinArea, "area")
+        if (j.has("blend")) chkBlend.isChecked = j.getBoolean("blend")
+        savePrefs()
+    }
+
+    private fun askSavePreset() {
+        val input = EditText(this).apply {
+            hint = "Name, e.g. Fast LCM"
+            setSingleLine()
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Save ${tabName()} settings as")
+            .setView(input)
+            .setPositiveButton("Save") { _, _ ->
+                val name = input.text.toString().trim()
+                if (name.isEmpty()) { toast("Give the preset a name"); return@setPositiveButton }
+                val store = presetStore()
+                val replaced = store.has(name)
+                store.put(name, currentSettings())
+                prefs.edit().putString("presets_$mode", store.toString()).apply()
+                toast(if (replaced) "Preset \"$name\" updated" else "Preset \"$name\" saved")
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showPresets() {
+        val names = presetNames()
+        if (names.isEmpty()) {
+            toast("No ${tabName()} presets yet. Set things up and tap Save settings.")
+            return
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("${tabName()} presets")
+            .setItems(names.toTypedArray()) { _, i ->
+                applySettings(presetStore().getJSONObject(names[i]))
+                toast("Applied \"${names[i]}\"")
+            }
+            .setNeutralButton("Delete…") { _, _ ->
+                android.app.AlertDialog.Builder(this)
+                    .setTitle("Delete which preset?")
+                    .setItems(names.toTypedArray()) { _, i ->
+                        val store = presetStore()
+                        store.remove(names[i])
+                        prefs.edit().putString("presets_$mode", store.toString()).apply()
+                        toast("Deleted \"${names[i]}\"")
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+            .setNegativeButton("Close", null)
+            .show()
+    }
 
     /** True when the loaded model or the chosen LoRA is an LCM one (judged by file name). */
     private fun isLcmSetup() = loadedModelName?.contains("lcm", ignoreCase = true) == true ||

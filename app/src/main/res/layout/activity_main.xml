@@ -193,6 +193,26 @@
                 android:text="Save every result to Pictures/StableAndroid automatically"
                 android:textColor="#DDDDDD" />
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnPresets"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Presets" />
+
+                <Button
+                    android:id="@+id/btnSavePreset"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Save settings" />
+            </LinearLayout>
+
             <!-- Prompt -->
             <TextView style="@style/Label" android:text="Prompt" />
             <EditText
