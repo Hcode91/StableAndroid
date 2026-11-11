@@ -76,6 +76,14 @@ The first GPU run is slower because shaders are prepared.
 Phone GPU drivers vary a lot. If the app closes while using the GPU, the next launch
 switches back to CPU automatically and says so in the log.
 
+### Turnip (custom Adreno driver)
+
+On Snapdragon phones the stock Qualcomm driver may fail to build the GPU code. Under **Model**,
+**Install Turnip (.zip)** takes the same driver packages emulators use (a `.zip` with `meta.json`
+and the driver `.so`, e.g. from the K11MCH1/AdrenoToolsDrivers releases) and loads it with
+libadrenotools. Close and reopen the app after installing or removing a driver. If the app
+closes while a custom driver is in use, the driver is turned off on the next launch.
+
 ## Expectations
 
 On the CPU, on a recent flagship expect very roughly 2–6 s per step at 512×512,

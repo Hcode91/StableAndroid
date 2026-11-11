@@ -63,3 +63,20 @@ else
   echo "$TAESD_SHA  $TAESD" | sha256sum -c --status || { echo "TAESD checksum mismatch"; rm -f "$TAESD"; exit 1; }
   echo "TAESD ready"
 fi
+
+# --- libadrenotools (BSD-2): lets the app load a custom Adreno driver such as Turnip
+ADRENO_COMMIT="8fae8ce254dfc1344527e05301e43f37dea2df80"
+AT="$TP/libadrenotools"
+if [ -d "$AT/.git" ] && [ "$(git -C "$AT" rev-parse HEAD)" = "$ADRENO_COMMIT" ] \
+   && [ -f "$AT/lib/linkernsbypass/CMakeLists.txt" ]; then
+  echo "libadrenotools already at $ADRENO_COMMIT"
+else
+  rm -rf "$AT"
+  mkdir -p "$AT"
+  git -C "$AT" init -q
+  git -C "$AT" remote add origin https://github.com/bylaws/libadrenotools
+  git -C "$AT" fetch -q --depth 1 origin "$ADRENO_COMMIT"
+  git -C "$AT" checkout -q FETCH_HEAD
+  git -C "$AT" submodule update -q --init --depth 1
+  echo "libadrenotools ready at $ADRENO_COMMIT"
+fi

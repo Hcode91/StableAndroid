@@ -158,7 +158,8 @@ class MainActivity : Activity() {
 
         thread {
             val info = (try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }) +
-                "\nGPU safe mode: " + (if (prefs.getBoolean("gpuSafe", true)) "on" else "off")
+                "\nGPU safe mode: " + (if (prefs.getBoolean("gpuSafe", true)) "on" else "off") +
+                (if (startupNotes.isEmpty()) "\nGPU driver: system" else "\n" + startupNotes.trimEnd())
             ui.post { appendLog(info) }
         }
         handleIncomingIntent(intent)
@@ -342,6 +343,13 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
         findViewById<Button>(R.id.btnChooseLora).setOnClickListener { pickFile(REQ_LORA) }
+        findViewById<Button>(R.id.btnInstallDriver).setOnClickListener { if (!busy) pickFile(REQ_DRIVER) }
+        findViewById<Button>(R.id.btnRemoveDriver).setOnClickListener {
+            if (busy) return@setOnClickListener
+            GpuDriver.remove(this)
+            updateUi()
+            appendLog("Custom GPU driver removed. Close and reopen the app to go back to the system driver.")
+        }
         findViewById<Button>(R.id.btnClearLora).setOnClickListener {
             if (busy || loraFile == null) return@setOnClickListener
             loraFile?.delete()
@@ -441,6 +449,7 @@ class MainActivity : Activity() {
             REQ_STYLE_IMAGE -> openStylizeImage(uri)
             REQ_MODEL -> importModel(uri)
             REQ_LORA -> importLora(uri)
+            REQ_DRIVER -> installDriver(uri)
         }
     }
 
@@ -596,6 +605,23 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun installDriver(uri: Uri) {
+        thread {
+            try {
+                val info = GpuDriver.install(this, uri)
+                prefs.edit().putBoolean("driverEnabled", true).apply()
+                ui.post {
+                    appendLog("Installed GPU driver: ${info.name}. Close and reopen the app, then choose " +
+                        "Run on: GPU (Vulkan) and tap Load.")
+                    toast("Driver installed. Close and reopen the app to use it.")
+                    updateUi()
+                }
+            } catch (t: Throwable) {
+                ui.post { appendLog("E Driver install failed: ${t.message}"); toast("Driver install failed: ${t.message}") }
+            }
+        }
+    }
+
     private fun loraStrength() = (editLoraStrength.text.toString().toFloatOrNull() ?: 1f).coerceIn(-2f, 2f)
 
     private fun loadModel() {
@@ -607,7 +633,9 @@ class MainActivity : Activity() {
         val mmap = chkMmap.isChecked
         val computeMode = (spinCompute.selectedItem as Choice).value
         val fastVae = chkFastVae.isChecked
+        // ggml looks at the GPU while loading even for CPU runs, so a custom driver counts as "in use".
         val wantGpu = computeMode != 0
+        if (customDriverActive) markGpuInFlight(true)
         val name = file.name
         setBusy(true, if (wantGpu) "Loading $name on the GPU…" else "Loading $name…")
         val started = System.currentTimeMillis()
@@ -1009,6 +1037,13 @@ class MainActivity : Activity() {
         if (mode == 1) canvas.previewHint = "Tap Photo to choose a picture to stylize"
         btnCancel.isEnabled = busy && loaded
         btnLoadModel.isEnabled = !busy && modelFile != null
+        findViewById<TextView>(R.id.txtDriver).text = GpuDriver.installed(this)?.let {
+            "GPU driver: ${it.name}" + when {
+                customDriverActive -> " (active)"
+                !prefs.getBoolean("driverEnabled", true) -> " (turned off after a crash)"
+                else -> " (restart the app to use it)"
+            }
+        } ?: ("GPU driver: system" + if (customDriverActive) " (restart the app to apply)" else "")
         txtLora.text = loraFile?.let { "LoRA: ${it.name}" } ?: "LoRA: none (optional add-on, e.g. an LCM LoRA for 4–8 step runs)"
         btnSave.isEnabled = !busy && currentResult() != null
         btnUseResult.isEnabled = !busy && currentResult() != null
@@ -1070,7 +1105,31 @@ class MainActivity : Activity() {
      * native call. "Safe mode" turns off matrix-core (cooperative matrix), integer-dot and
      * bfloat16 shaders, which Qualcomm's stock driver often fails to build.
      */
+    private var customDriverActive = false
+    private var startupNotes = ""
+
+    /** Opens the installed Turnip driver, if any. Must run before any other native call. */
+    private fun applyGpuDriver() {
+        val p = getSharedPreferences("settings", MODE_PRIVATE)
+        val info = GpuDriver.installed(this) ?: return
+        if (!p.getBoolean("driverEnabled", true)) return
+        if (p.getBoolean("gpuInFlight", false)) {
+            // The app died while this driver was in use: don't load it again automatically.
+            p.edit().putBoolean("driverEnabled", false).apply()
+            startupNotes += "The custom GPU driver was in use when the app closed, so it has been turned off. " +
+                "Tap 'Install Turnip (.zip)' to try another version.\n"
+            return
+        }
+        customDriverActive = try {
+            SdNative.setGpuDriver(applicationInfo.nativeLibraryDir, info.dir.absolutePath, info.library,
+                cacheDir.absolutePath)
+        } catch (t: Throwable) { false }
+        startupNotes += if (customDriverActive) "GPU driver: ${info.name} (custom)\n"
+            else "Custom GPU driver ${info.name} could not be opened; using the system driver.\n"
+    }
+
     private fun applyGpuEnv() {
+        applyGpuDriver()
         val safe = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("gpuSafe", true)
         val flags = listOf("GGML_VK_DISABLE_COOPMAT", "GGML_VK_DISABLE_COOPMAT2",
             "GGML_VK_DISABLE_INTEGER_DOT_PRODUCT", "GGML_VK_DISABLE_BFLOAT16")
@@ -1121,5 +1180,6 @@ class MainActivity : Activity() {
         private const val REQ_MODEL = 2
         private const val REQ_STYLE_IMAGE = 3
         private const val REQ_LORA = 4
+        private const val REQ_DRIVER = 5
     }
 }

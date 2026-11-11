@@ -6,6 +6,8 @@ object SdNative {
         System.loadLibrary("stableandroid")
     }
 
+    /** Opens a custom Adreno driver (Turnip). Must be the first native call; false if it failed. */
+    @JvmStatic external fun setGpuDriver(hookLibDir: String, driverDir: String, driverName: String, tmpDir: String): Boolean
     @JvmStatic external fun systemInfo(): String
     @JvmStatic external fun physicalCores(): Int
     /** "name\tdescription" per line (e.g. CPU, Vulkan0). Touches the GPU driver. */

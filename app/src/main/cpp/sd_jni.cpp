@@ -112,7 +112,20 @@ void ensure_callbacks() {
 
 }  // namespace
 
+bool vk_shim_use_custom_driver(const char* hookDir, const char* driverDir, const char* driverName,
+                               const char* tmpDir);
+
 extern "C" {
+
+// Opens a custom GPU driver (Turnip) via libadrenotools. Call once, before any other native call.
+JNIEXPORT jboolean JNICALL
+Java_com_hcode91_stableandroid_SdNative_setGpuDriver(JNIEnv* env, jclass, jstring jhook, jstring jdir,
+                                                     jstring jname, jstring jtmp) {
+    std::string hook = jstr(env, jhook), dir = jstr(env, jdir), name = jstr(env, jname), tmp = jstr(env, jtmp);
+    if (!dir.empty() && dir.back() != '/') dir += '/';
+    if (!hook.empty() && hook.back() != '/') hook += '/';
+    return vk_shim_use_custom_driver(hook.c_str(), dir.c_str(), name.c_str(), tmp.c_str());
+}
 
 JNIEXPORT jstring JNICALL
 Java_com_hcode91_stableandroid_SdNative_systemInfo(JNIEnv* env, jclass) {

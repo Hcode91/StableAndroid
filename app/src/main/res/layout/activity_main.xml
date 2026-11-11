@@ -366,6 +366,31 @@
             <TextView style="@style/Label" android:text="Run on" />
             <Spinner android:id="@+id/spinCompute" style="@style/Spin" />
 
+            <TextView
+                android:id="@+id/txtDriver"
+                style="@style/Label"
+                android:text="GPU driver: system" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnInstallDriver"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Install Turnip (.zip)" />
+
+                <Button
+                    android:id="@+id/btnRemoveDriver"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Use system driver" />
+            </LinearLayout>
+
             <CheckBox
                 android:id="@+id/chkGpuSafe"
                 android:layout_width="wrap_content"

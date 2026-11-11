@@ -54,7 +54,8 @@ android {
     }
 
     packaging {
-        jniLibs { useLegacyPackaging = false }
+        // libadrenotools needs its hook libraries extracted on disk.
+        jniLibs { useLegacyPackaging = true }
     }
 }
 
