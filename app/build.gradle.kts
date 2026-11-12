@@ -67,5 +67,8 @@ kotlin {
 
 dependencies {
     // Runs the Florence-2 image-description models (Describe button).
-    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.29.0")
+    // Pinned to 1.28.0 on purpose: 1.29.0 added Microsoft telemetry (an auto-started
+    // provider, an HTTP client and INTERNET permission). Do not upgrade without re-checking;
+    // CI fails the build if any of that reappears.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.28.0")
 }

@@ -2,8 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- This app must never have network access. The ONNX Runtime library declares these
-         permissions in its own manifest; strip them so Android blocks all connections. -->
+    <!-- This app must never have network access. Some library versions declare these
+         permissions in their own manifests; strip them so Android blocks all connections. -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
 

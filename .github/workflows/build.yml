@@ -50,6 +50,14 @@ jobs:
           if echo "$PERMS" | grep -qE "INTERNET|ACCESS_NETWORK_STATE"; then
             echo "::error::APK requests network access"; exit 1
           fi
+          # No telemetry code or auto-started library components either.
+          rm -rf /tmp/apkchk && mkdir /tmp/apkchk && unzip -q app/build/outputs/apk/release/*.apk -d /tmp/apkchk
+          if "$AAPT" dump xmltree --file AndroidManifest.xml app/build/outputs/apk/release/*.apk | grep -q "E: provider"; then
+            echo "::error::APK contains a content provider (auto-started library code)"; exit 1
+          fi
+          if strings -a /tmp/apkchk/classes*.dex /tmp/apkchk/lib/*/*.so | grep -qiE "events\.data\.microsoft|OneCollector|Lai/onnxruntime/telemetry|HttpURLConnection"; then
+            echo "::error::APK contains telemetry or HTTP client code"; exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4

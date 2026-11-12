@@ -1574,6 +1574,9 @@ class MainActivity : Activity() {
     }
 
     private fun applyGpuEnv() {
+        // Clear anything a library may have queued in the cache folder by earlier builds.
+        try { cacheDir.listFiles()?.forEach { it.deleteRecursively() } } catch (_: Throwable) { }
+        try { android.system.Os.setenv("ORT_DISABLE_TELEMETRY", "1", true) } catch (_: Throwable) { }
         applyGpuDriver()
         val safe = getSharedPreferences("settings", MODE_PRIVATE).getBoolean("gpuSafe", true)
         val flags = listOf("GGML_VK_DISABLE_COOPMAT", "GGML_VK_DISABLE_COOPMAT2",
