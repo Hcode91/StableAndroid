@@ -372,6 +372,36 @@
                 android:text="Only change the masked area (blend edges)"
                 android:textColor="#DDDDDD" />
 
+            <LinearLayout
+                android:id="@+id/rowFeather"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/txtFeather"
+                    style="@style/Label"
+                    android:layout_marginTop="0dp"
+                    android:text="Edge feather" />
+
+                <SeekBar
+                    android:id="@+id/seekFeather"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:max="100"
+                    android:progress="12" />
+            </LinearLayout>
+
+            <CheckBox
+                android:id="@+id/chkColorMatch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="Match colours to the surrounding area"
+                android:textColor="#DDDDDD" />
+
             <!-- Model -->
             <TextView style="@style/Header" android:text="Model" />
 

@@ -77,6 +77,8 @@ apply or delete. The prompt itself is not stored.
 | Setting | What it does |
 |---|---|
 | Inpaint area: **Only masked** | Crops around the mask, generates that region at the working size and pastes it back, so big photos keep their resolution and small details get more pixels. **Whole image** fits the entire photo into the working size. |
+| Edge feather | Inpaint tab. How wide the soft edge around the mask is, from sharp to very soft. A wider feather hides tone differences but needs more room around the mask. |
+| Match colours to the surrounding area | Inpaint tab, on by default. Shifts the new patch so its average colour just outside the mask equals the original's, which evens out skin tone. |
 | Working size | Long side of the generated region (512 is native for SD 1.5). Bigger = slower and more RAM. |
 | Denoise | 1.0 for inpainting checkpoints. With a regular (non-inpainting) SD 1.5 model use ~0.6–0.8. |
 | Weights in memory | **F16** is the default (~2 GB RAM for the UNet+CLIP+VAE). **Q8_0 / Q4_0** quantise at load time to use less RAM and run a bit faster, with some quality loss. |

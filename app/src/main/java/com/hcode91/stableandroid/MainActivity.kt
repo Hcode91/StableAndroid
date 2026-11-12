@@ -448,6 +448,18 @@ class MainActivity : Activity() {
         spinStyle.setSelection(prefs.getInt("style", 1))
         spinTxtSize.setSelection(prefs.getInt("txtSize", 0))
         chkBlend.isChecked = prefs.getBoolean("blend", true)
+        findViewById<CheckBox>(R.id.chkColorMatch).isChecked = prefs.getBoolean("colorMatch", true)
+        findViewById<SeekBar>(R.id.seekFeather).apply {
+            progress = prefs.getInt("feather", 12)
+            val label = findViewById<TextView>(R.id.txtFeather)
+            fun show(p: Int) { label.text = "Edge feather: " + when { p < 5 -> "sharp"; p < 25 -> "normal"; p < 60 -> "soft"; else -> "very soft" } }
+            show(progress)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(s: SeekBar, p: Int, fromUser: Boolean) = show(p)
+                override fun onStartTrackingTouch(s: SeekBar) {}
+                override fun onStopTrackingTouch(s: SeekBar) {}
+            })
+        }
         chkFlash.isChecked = prefs.getBoolean("flash", true)
         chkMmap.isChecked = prefs.getBoolean("mmap", false)
         chkTiling.isChecked = prefs.getBoolean("tiling", true)
@@ -486,6 +498,8 @@ class MainActivity : Activity() {
             .putInt("txtSize", spinTxtSize.selectedItemPosition)
             .putInt("mode", mode)
             .putBoolean("blend", chkBlend.isChecked)
+            .putBoolean("colorMatch", findViewById<CheckBox>(R.id.chkColorMatch).isChecked)
+            .putInt("feather", findViewById<SeekBar>(R.id.seekFeather).progress)
             .putBoolean("flash", chkFlash.isChecked)
             .putBoolean("mmap", chkMmap.isChecked)
             .putBoolean("tiling", chkTiling.isChecked)
@@ -962,6 +976,8 @@ class MainActivity : Activity() {
         if (mode == 0) {
             put("area", spinArea.selectedItemPosition)
             put("blend", chkBlend.isChecked)
+            put("colorMatch", findViewById<CheckBox>(R.id.chkColorMatch).isChecked)
+            put("feather", findViewById<SeekBar>(R.id.seekFeather).progress)
         }
     }
 
@@ -975,6 +991,8 @@ class MainActivity : Activity() {
         sel(spinSampler, "sampler"); sel(spinScheduler, "scheduler"); sel(spinStyle, "style")
         sel(spinSize, "size"); sel(spinTxtSize, "txtSize"); sel(spinArea, "area")
         if (j.has("blend")) chkBlend.isChecked = j.getBoolean("blend")
+        if (j.has("colorMatch")) findViewById<CheckBox>(R.id.chkColorMatch).isChecked = j.getBoolean("colorMatch")
+        if (j.has("feather")) findViewById<SeekBar>(R.id.seekFeather).progress = j.getInt("feather")
         savePrefs()
     }
 
@@ -1108,6 +1126,9 @@ class MainActivity : Activity() {
         val size = (spinSize.selectedItem as Choice).value
         val onlyMasked = (spinArea.selectedItem as Choice).value == 1
         val blend = chkBlend.isChecked
+        val colorMatch = findViewById<CheckBox>(R.id.chkColorMatch).isChecked
+        // Slider 0–100 -> soft edge of 0.4%–20% of the mask's longer side.
+        val feather = 0.004f + 0.196f * (findViewById<SeekBar>(R.id.seekFeather).progress / 100f)
         val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
         val tiling = chkTiling.isChecked && !loadedWithTae
         val count = (editImages.text.toString().toIntOrNull() ?: 1).coerceIn(1, 8)
@@ -1125,7 +1146,7 @@ class MainActivity : Activity() {
 
         thread(name = "sd-gen") {
             try {
-                val job = ImageOps.prepare(image, maskCopy, onlyMasked, size, 32)
+                val job = ImageOps.prepare(image, maskCopy, onlyMasked, size, 32, feather)
                     ?: throw IllegalStateException("Paint a mask over the area you want to change first")
                 ui.post {
                     appendLog("Inpainting $count× ${job.width}×${job.height} from region " +
@@ -1140,7 +1161,7 @@ class MainActivity : Activity() {
                 val n = out.size / frame
                 val finals = (0 until n).map { k ->
                     val gen = ImageOps.fromRgb(out, job.width, job.height, k * frame)
-                    val f = ImageOps.composite(image, maskCopy, job, gen, blend)
+                    val f = ImageOps.composite(image, maskCopy, job, gen, blend, colorMatch)
                     gen.recycle()
                     f
                 }
@@ -1234,6 +1255,8 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.cellTxtSize).visibility = if (text) View.VISIBLE else View.GONE
         findViewById<View>(R.id.btnStylePhoto).visibility = if (text) View.GONE else View.VISIBLE
         chkBlend.visibility = inpaintVis
+        findViewById<View>(R.id.rowFeather).visibility = inpaintVis
+        findViewById<View>(R.id.chkColorMatch).visibility = inpaintVis
         findViewById<View>(R.id.rowCreate).visibility = if (create) View.VISIBLE else View.GONE
         findViewById<View>(R.id.chkSharpen).visibility = if (create) View.VISIBLE else View.GONE
         btnGenerate.text = when (mode) { 0 -> "Inpaint"; 1 -> "Generate"; else -> "Create" }

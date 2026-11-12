@@ -101,6 +101,8 @@ object ImageOps {
         val height: Int,
         val rgb: ByteArray,
         val mask: ByteArray,
+        /** Width of the soft edge, in original-image pixels. */
+        val featherPx: Int = 0,
     )
 
     /**
@@ -108,10 +110,15 @@ object ImageOps {
      * scales it so its long side is about [targetSide] (multiples of 64),
      * and packs the image + binary mask for the native side.
      */
-    fun prepare(image: Bitmap, mask: Bitmap, onlyMasked: Boolean, targetSide: Int, padding: Int): Job? {
+    fun prepare(image: Bitmap, mask: Bitmap, onlyMasked: Boolean, targetSide: Int, padding: Int,
+                feather: Float = 0.024f): Job? {
         val bounds = maskBounds(mask) ?: return null
+        // [feather] is the soft-edge width as a fraction of the mask's longer side.
+        val featherPx = max(2, (max(bounds.width(), bounds.height()) * feather).roundToInt())
         val region = if (onlyMasked) {
-            val pad = max(padding, (max(bounds.width(), bounds.height()) * 0.15f).roundToInt())
+            // Leave room around the mask for the soft edge to fade out completely.
+            val pad = max(max(padding, (featherPx * 2.5f).roundToInt()),
+                (max(bounds.width(), bounds.height()) * 0.15f).roundToInt())
             val r = Rect(bounds.left - pad, bounds.top - pad, bounds.right + pad, bounds.bottom + pad)
             // Give the model a reasonable amount of context: at least targetSide/2 px each way.
             val minSide = min(targetSide / 2, min(image.width, image.height))
@@ -139,7 +146,7 @@ object ImageOps {
         if (scaledMask !== cropMask) scaledMask.recycle()
         if (cropMask !== mask) cropMask.recycle()
 
-        return Job(region, w, h, rgb, bin)
+        return Job(region, w, h, rgb, bin, featherPx)
     }
 
     private fun shiftInside(r: Rect, w: Int, h: Int) {
@@ -156,7 +163,8 @@ object ImageOps {
      * With [blend], only the (feathered) masked area is replaced, so the rest of
      * the photo keeps its full resolution and is untouched by the VAE.
      */
-    fun composite(original: Bitmap, mask: Bitmap, job: Job, generated: Bitmap, blend: Boolean): Bitmap {
+    fun composite(original: Bitmap, mask: Bitmap, job: Job, generated: Bitmap, blend: Boolean,
+                  colorMatch: Boolean = true): Bitmap {
         val out = original.copy(Bitmap.Config.ARGB_8888, true)
         val rw = job.region.width()
         val rh = job.region.height()
@@ -166,11 +174,12 @@ object ImageOps {
             if (gen !== generated) gen.recycle()
             return out
         }
-        val soft = featheredMask(mask, job.region)
+        val soft = featheredMask(mask, job.region, job.featherPx)
         val gpx = IntArray(rw * rh)
         gen.getPixels(gpx, 0, rw, 0, 0, rw, rh)
         val opx = IntArray(rw * rh)
         out.getPixels(opx, 0, rw, job.region.left, job.region.top, rw, rh)
+        if (colorMatch) matchColors(gpx, opx, soft, hardMask(mask, job.region))
         for (i in gpx.indices) {
             val a = soft[i].toInt() and 0xFF
             if (a == 0) continue
@@ -186,11 +195,50 @@ object ImageOps {
         return out
     }
 
-    /** Mask alpha for [region], dilated slightly and blurred (via down/up scaling). */
-    private fun featheredMask(mask: Bitmap, region: Rect): ByteArray {
+    private fun hardMask(mask: Bitmap, region: Rect): ByteArray {
+        val crop = Bitmap.createBitmap(mask, region.left, region.top, region.width(), region.height())
+        val a = alphaOf(crop)
+        if (crop !== mask) crop.recycle()
+        return a
+    }
+
+    /**
+     * Shifts the generated patch's colours so that, in the band just outside the painted
+     * mask (where both images show the same thing), its average colour equals the original's.
+     * This removes the overall tone difference that makes a patch of skin stand out.
+     */
+    private fun matchColors(gpx: IntArray, opx: IntArray, soft: ByteArray, hard: ByteArray) {
+        var n = 0L
+        var dr = 0L; var dg = 0L; var db = 0L
+        for (i in gpx.indices) {
+            if ((soft[i].toInt() and 0xFF) == 0 || (hard[i].toInt() and 0xFF) > 127) continue
+            val g = gpx[i]; val o = opx[i]
+            dr += ((o shr 16) and 0xFF) - ((g shr 16) and 0xFF)
+            dg += ((o shr 8) and 0xFF) - ((g shr 8) and 0xFF)
+            db += (o and 0xFF) - (g and 0xFF)
+            n++
+        }
+        if (n < 64) return                      // mask reaches the edges: nothing to compare with
+        val limit = 48L                         // never shift wildly if the surroundings changed
+        val sr = (dr / n).coerceIn(-limit, limit).toInt()
+        val sg = (dg / n).coerceIn(-limit, limit).toInt()
+        val sb = (db / n).coerceIn(-limit, limit).toInt()
+        if (sr == 0 && sg == 0 && sb == 0) return
+        for (i in gpx.indices) {
+            if ((soft[i].toInt() and 0xFF) == 0) continue
+            val g = gpx[i]
+            val r = (((g shr 16) and 0xFF) + sr).coerceIn(0, 255)
+            val gg = (((g shr 8) and 0xFF) + sg).coerceIn(0, 255)
+            val b = ((g and 0xFF) + sb).coerceIn(0, 255)
+            gpx[i] = (0xFF shl 24) or (r shl 16) or (gg shl 8) or b
+        }
+    }
+
+    /** Mask alpha for [region], grown by about [featherPx] and blurred (via down/up scaling). */
+    private fun featheredMask(mask: Bitmap, region: Rect, featherPx: Int): ByteArray {
         val rw = region.width(); val rh = region.height()
         val crop = Bitmap.createBitmap(mask, region.left, region.top, rw, rh)
-        val radius = max(4, min(rw, rh) / 48)
+        val radius = if (featherPx > 0) max(2, featherPx) else max(4, min(rw, rh) / 48)
         val sw = max(1, rw / radius); val sh = max(1, rh / radius)
         val small = Bitmap.createScaledBitmap(crop, sw, sh, true)
         // dilate a little at the small scale so the blur doesn't eat into the mask
