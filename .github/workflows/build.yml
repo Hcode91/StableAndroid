@@ -42,6 +42,15 @@ jobs:
       - name: Build release APK
         run: ./gradlew --no-daemon assembleRelease
 
+      - name: Check the APK has no network permission
+        run: |
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | tail -1)
+          PERMS=$("$AAPT" dump permissions app/build/outputs/apk/release/*.apk)
+          echo "$PERMS"
+          if echo "$PERMS" | grep -qE "INTERNET|ACCESS_NETWORK_STATE"; then
+            echo "::error::APK requests network access"; exit 1
+          fi
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
