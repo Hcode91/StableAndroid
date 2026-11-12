@@ -362,6 +362,7 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
+        findViewById<Button>(R.id.btnCheckpoints).setOnClickListener { if (!busy) showCheckpoints() }
         findViewById<Button>(R.id.btnPresets).setOnClickListener { if (!busy) showPresets() }
         findViewById<Button>(R.id.btnDescribe).setOnClickListener { if (!busy) startDescribe() }
         findViewById<Button>(R.id.btnDescribeFiles).setOnClickListener {
@@ -523,6 +524,13 @@ class MainActivity : Activity() {
             REQ_MODEL -> importModel(uri)
             REQ_LORA -> importLora(uri)
             REQ_DRIVER -> installDriver(uri)
+            REQ_MODEL_FOLDER -> {
+                try {
+                    contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                } catch (_: Throwable) { }
+                prefs.edit().putString("modelFolder", uri.toString()).apply()
+                showCheckpoints()
+            }
         }
     }
 
@@ -621,7 +629,7 @@ class MainActivity : Activity() {
                 // Release the old model before deleting its file.
                 SdNative.freeModel()
                 ui.post { loadedModelName = null }
-                val file = ModelStore.import(this, uri, "models") { copied, total ->
+                val file = ModelStore.import(this, uri, "models", keepOthers = true) { copied, total ->
                     ui.post {
                         if (total > 0) {
                             progress.isIndeterminate = false
@@ -781,6 +789,75 @@ class MainActivity : Activity() {
     }
 
     // ---------------------------------------------------------------- generate
+
+    // ---------------------------------------------------------------- checkpoint list
+
+    private fun modelFolder(): Uri? = prefs.getString("modelFolder", null)?.let { Uri.parse(it) }
+
+    private fun chooseModelFolder() {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        }
+        @Suppress("DEPRECATION")
+        startActivityForResult(i, REQ_MODEL_FOLDER)
+    }
+
+    /** Lists checkpoints in the chosen folder plus the app's own copies; tap one to load it. */
+    private fun showCheckpoints() {
+        val folder = modelFolder()
+        thread {
+            val entries = ModelStore.listCheckpoints(this, folder)
+            ui.post {
+                val labels = entries.map { e ->
+                    val state = when {
+                        e.local != null && e.local.name == loadedModelName -> "loaded"
+                        e.local != null -> "ready"
+                        else -> "needs copying first"
+                    }
+                    "${e.name}\n${ModelStore.gb(e.size)} · $state"
+                }
+                val b = android.app.AlertDialog.Builder(this)
+                    .setTitle(if (folder == null) "Checkpoints (no folder chosen)" else "Checkpoints")
+                    .setPositiveButton("Choose folder") { _, _ -> chooseModelFolder() }
+                    .setNegativeButton("Close", null)
+                if (entries.isEmpty()) {
+                    b.setMessage(if (folder == null) "Choose the folder where you keep your .safetensors checkpoints."
+                        else "No checkpoints found directly in that folder (files under 900 MB and sub-folders are ignored).")
+                } else {
+                    b.setItems(labels.toTypedArray()) { _, i ->
+                        val e = entries[i]
+                        when {
+                            e.local != null -> { modelFile = e.local; savePrefs(); updateUi(); loadModel() }
+                            e.uri != null -> importModel(e.uri)
+                        }
+                    }
+                    if (ModelStore.library(this).isNotEmpty()) b.setNeutralButton("Delete a copy") { _, _ -> showDeleteCopies() }
+                }
+                b.show()
+            }
+        }
+    }
+
+    private fun showDeleteCopies() {
+        val copies = ModelStore.library(this)
+        val labels = copies.map { "${it.name}\n${ModelStore.gb(it.length())}" + if (it.name == loadedModelName) " · loaded" else "" }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Delete which copy from the app?")
+            .setItems(labels.toTypedArray()) { _, i ->
+                val f = copies[i]
+                if (f.name == loadedModelName) {
+                    SdNative.freeModel()
+                    loadedModelName = null
+                }
+                if (modelFile?.absolutePath == f.absolutePath) modelFile = null
+                f.delete()
+                savePrefs()
+                appendLog("Deleted the app's copy of ${f.name}. Your original file is untouched.")
+                updateUi()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
 
     // ---------------------------------------------------------------- describe (Florence-2)
 
@@ -1638,5 +1715,6 @@ class MainActivity : Activity() {
         private const val REQ_DRIVER = 5
         private const val REQ_DESCRIBE_FILES = 6
         private const val REQ_DESCRIBE_IMAGE = 7
+        private const val REQ_MODEL_FOLDER = 8
     }
 }

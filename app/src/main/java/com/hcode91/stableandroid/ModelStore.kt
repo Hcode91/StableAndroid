@@ -31,9 +31,10 @@ object ModelStore {
 
     /**
      * Copies [uri] into the models folder (skipping if an identical-size copy exists)
-     * and deletes other models there to save space. Returns the local file.
+     * and returns the local file. With [keepOthers] the folder acts as a library; otherwise
+     * other files there are deleted so only one is kept.
      */
-    fun import(ctx: Context, uri: Uri, folder: String = "models",
+    fun import(ctx: Context, uri: Uri, folder: String = "models", keepOthers: Boolean = false,
                onProgress: (copied: Long, total: Long) -> Unit): File {
         val (rawName, size) = queryName(ctx, uri)
         val name = rawName.replace(Regex("[^A-Za-z0-9._ -]"), "_")
@@ -43,14 +44,14 @@ object ModelStore {
 
         if (size > 0) {
             val free = StatFs(dir.path).availableBytes
-            val reclaim = dir.listFiles()?.filter { it != dest }?.sumOf { it.length() } ?: 0L
+            val reclaim = if (keepOthers) 0L else dir.listFiles()?.filter { it != dest }?.sumOf { it.length() } ?: 0L
             if (free + reclaim < size + 200L * 1024 * 1024) {
                 throw IllegalStateException(
-                    "Not enough free storage to copy the model (needs ${gb(size)}, ${gb(free + reclaim)} available)")
+                    "Not enough free storage to copy this (needs ${gb(size)}, ${gb(free + reclaim)} available)" +
+                        if (keepOthers) ". Delete a copy under Checkpoints → Delete a copy, or the original after copying." else "")
             }
         }
-        // Only one model is kept to save space.
-        dir.listFiles()?.forEach { if (it != dest) it.delete() }
+        if (!keepOthers) dir.listFiles()?.forEach { if (it != dest) it.delete() }
 
         val tmp = File(dir, "$name.part")
         try {
@@ -106,6 +107,47 @@ object ModelStore {
             if (head[8] != '{'.code.toByte()) return "Not a valid .safetensors file (header doesn't start with '{')"
         }
         return null
+    }
+
+    class Entry(val name: String, val size: Long, val uri: Uri?, val local: File?)
+
+    private fun isCheckpointName(n: String) =
+        n.endsWith(".safetensors", true) || n.endsWith(".ckpt", true) || n.endsWith(".gguf", true)
+
+    /** Checkpoints already copied into the app. */
+    fun library(ctx: Context): List<File> =
+        dir(ctx, "models").listFiles()?.filter { it.isFile && isCheckpointName(it.name) }?.sortedBy { it.name.lowercase() }
+            ?: emptyList()
+
+    /**
+     * Checkpoint-sized files directly inside the folder the user picked (not sub-folders),
+     * merged with the app's own copies. Files under 900 MB are skipped: those are LoRAs,
+     * VAEs and ControlNets, not checkpoints.
+     */
+    fun listCheckpoints(ctx: Context, tree: Uri?): List<Entry> {
+        val local = library(ctx).associateBy { it.name }
+        val out = LinkedHashMap<String, Entry>()
+        if (tree != null) {
+            try {
+                val children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(
+                    tree, android.provider.DocumentsContract.getTreeDocumentId(tree))
+                ctx.contentResolver.query(children, arrayOf(
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    android.provider.DocumentsContract.Document.COLUMN_SIZE), null, null, null)?.use { c ->
+                    while (c.moveToNext()) {
+                        val name = c.getString(1) ?: continue
+                        val size = if (c.isNull(2)) 0L else c.getLong(2)
+                        if (!isCheckpointName(name) || size < 900L * 1024 * 1024) continue
+                        val key = name.replace(Regex("[^A-Za-z0-9._ -]"), "_")
+                        val uri = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0))
+                        out[key] = Entry(name, size, uri, local[key]?.takeIf { it.length() == size })
+                    }
+                }
+            } catch (_: Throwable) { /* folder gone or permission revoked: show the app's copies only */ }
+        }
+        for ((name, f) in local) if (name !in out) out[name] = Entry(name, f.length(), null, f)
+        return out.values.sortedBy { it.name.lowercase() }
     }
 
     fun gb(bytes: Long) = "%.2f GB".format(bytes / 1_073_741_824.0)

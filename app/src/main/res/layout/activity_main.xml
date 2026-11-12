@@ -386,11 +386,18 @@
                 android:orientation="horizontal">
 
                 <Button
+                    android:id="@+id/btnCheckpoints"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Checkpoints" />
+
+                <Button
                     android:id="@+id/btnChooseModel"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_weight="1"
-                    android:text="Choose model" />
+                    android:text="Pick file" />
 
                 <Button
                     android:id="@+id/btnLoadModel"

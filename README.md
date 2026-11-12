@@ -59,6 +59,13 @@ asks for a picture. It needs four model files from
 `vision_encoder_quantized.onnx`, `embed_tokens_quantized.onnx`, `encoder_model_quantized.onnx`
 and `decoder_model_quantized.onnx`.
 
+### Checkpoint list
+
+**Model → Checkpoints** lists the checkpoints in a folder you choose (files of 900 MB or more,
+not sub-folders) together with the copies the app already holds. Tap one to load it. A checkpoint
+is copied into the app the first time it is used and loads directly after that; **Delete a copy**
+frees the app's copy without touching your original.
+
 ### Presets
 
 Each tab has its own presets. **Save settings** stores the current sampler, scheduler, steps, CFG,
