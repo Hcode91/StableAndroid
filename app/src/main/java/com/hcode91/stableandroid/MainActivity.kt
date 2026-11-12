@@ -161,6 +161,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        installCrashLogger()
         applyGpuEnv()
         setContentView(R.layout.activity_main)
         bindViews()
@@ -449,9 +450,11 @@ class MainActivity : Activity() {
         spinTxtSize.setSelection(prefs.getInt("txtSize", 0))
         chkBlend.isChecked = prefs.getBoolean("blend", true)
         findViewById<CheckBox>(R.id.chkColorMatch).isChecked = prefs.getBoolean("colorMatch", true)
+        // Looked up here, not inside apply{}: there findViewById would search inside the SeekBar.
+        val featherLabel: TextView = findViewById(R.id.txtFeather)
         findViewById<SeekBar>(R.id.seekFeather).apply {
             progress = prefs.getInt("feather", 12)
-            val label = findViewById<TextView>(R.id.txtFeather)
+            val label = featherLabel
             fun show(p: Int) { label.text = "Edge feather: " + when { p < 5 -> "sharp"; p < 25 -> "normal"; p < 60 -> "soft"; else -> "very soft" } }
             show(progress)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -1635,7 +1638,7 @@ class MainActivity : Activity() {
             } catch (_: Throwable) { }
         }
         if (prev.exists()) {
-            val tail = try { prev.readLines().takeLast(15) } catch (_: Throwable) { emptyList() }
+            val tail = try { prev.readLines().takeLast(40) } catch (_: Throwable) { emptyList() }
             if (tail.isNotEmpty()) {
                 lines += "--- end of previous session log ---"
                 lines += tail
@@ -1650,6 +1653,19 @@ class MainActivity : Activity() {
      * native call. "Safe mode" turns off matrix-core (cooperative matrix), integer-dot and
      * bfloat16 shaders, which Qualcomm's stock driver often fails to build.
      */
+    /** Writes any uncaught error to the session log, so the next launch can show what happened. */
+    private fun installCrashLogger() {
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        val logFile = File(filesDir, "session.log")
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            try {
+                val trace = android.util.Log.getStackTraceString(error).lines().take(25).joinToString("\n")
+                logFile.appendText("E APP CRASH on ${thread.name}:\n$trace\n")
+            } catch (_: Throwable) { }
+            previous?.uncaughtException(thread, error)
+        }
+    }
+
     private var customDriverActive = false
     private var startupNotes = ""
 
