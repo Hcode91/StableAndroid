@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "stable-diffusion.h"
+#include "gif_writer.h"
 
 #define TAG "StableAndroid"
 
@@ -154,7 +155,8 @@ Java_com_hcode91_stableandroid_SdNative_physicalCores(JNIEnv*, jclass) {
 JNIEXPORT jstring JNICALL
 Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring jpath, jstring jvae,
                                                   jint threads, jint wtype, jboolean flashAttn,
-                                                  jboolean mmap, jstring jbackend, jstring jtaesd) {
+                                                  jboolean mmap, jstring jbackend, jstring jtaesd,
+                                                  jstring jmotion) {
     ensure_callbacks();
     std::lock_guard<std::mutex> lock(g_ctx_mutex);
     if (g_ctx) {
@@ -165,12 +167,14 @@ Java_com_hcode91_stableandroid_SdNative_loadModel(JNIEnv* env, jclass, jstring j
     std::string vae = jstr(env, jvae);
     std::string backend = jstr(env, jbackend);
     std::string taesd = jstr(env, jtaesd);
+    std::string motion = jstr(env, jmotion);
 
     sd_ctx_params_t p;
     sd_ctx_params_init(&p);
     p.model_path = path.c_str();
     if (!vae.empty()) p.vae_path = vae.c_str();
     if (!taesd.empty()) p.taesd_path = taesd.c_str();  // tiny VAE for fast encode/decode
+    if (!motion.empty()) p.motion_module_path = motion.c_str();  // AnimateDiff, for the Video tab
     if (threads > 0) p.n_threads = threads;
     p.wtype = (wtype < 0) ? SD_TYPE_COUNT : (enum sd_type_t)wtype;
     p.flash_attn = flashAttn;
@@ -307,6 +311,89 @@ Java_com_hcode91_stableandroid_SdNative_inpaint(JNIEnv* env, jclass, jbyteArray 
     env->SetByteArrayRegion(out, 0, (jsize)all.size(), reinterpret_cast<const jbyte*>(all.data()));
     free_sd_image_generation_result(result);
     return out;
+}
+
+// Image-to-video with AnimateDiff (the model must have been loaded with a motion module).
+// init: RGB bytes (w*h*3). Returns the frames' RGB bytes concatenated (n * w*h*3).
+JNIEXPORT jbyteArray JNICALL
+Java_com_hcode91_stableandroid_SdNative_video(JNIEnv* env, jclass, jbyteArray jinit, jint width, jint height,
+                                              jstring jprompt, jstring jneg, jint steps, jfloat cfg,
+                                              jfloat strength, jlong seed, jint sampler, jint scheduler,
+                                              jint clipSkip, jint frames, jint fps) {
+    std::lock_guard<std::mutex> lock(g_ctx_mutex);
+    if (!g_ctx) {
+        throw_java(env, "No model loaded.");
+        return nullptr;
+    }
+    const size_t npx = (size_t)width * (size_t)height;
+    if (jinit == nullptr || (size_t)env->GetArrayLength(jinit) != npx * 3) {
+        throw_java(env, "Image size mismatch.");
+        return nullptr;
+    }
+    std::vector<uint8_t> init(npx * 3);
+    env->GetByteArrayRegion(jinit, 0, (jsize)init.size(), reinterpret_cast<jbyte*>(init.data()));
+    std::string prompt = jstr(env, jprompt);
+    std::string neg = jstr(env, jneg);
+
+    sd_vid_gen_params_t g;
+    sd_vid_gen_params_init(&g);
+    g.prompt = prompt.c_str();
+    g.negative_prompt = neg.c_str();
+    g.clip_skip = clipSkip;
+    g.init_image = {(uint32_t)width, (uint32_t)height, 3, init.data()};
+    g.width = width;
+    g.height = height;
+    g.strength = strength;
+    g.seed = seed;
+    g.video_frames = frames;
+    g.fps = fps;
+    g.sample_params.sample_steps = steps;
+    g.sample_params.guidance.txt_cfg = cfg;
+    g.sample_params.sample_method =
+        (sampler < 0 || sampler >= SAMPLE_METHOD_COUNT) ? SAMPLE_METHOD_COUNT : (enum sample_method_t)sampler;
+    g.sample_params.scheduler =
+        (scheduler < 0 || scheduler >= SCHEDULER_COUNT) ? SCHEDULER_COUNT : (enum scheduler_t)scheduler;
+
+    g_step.store(0);
+    g_steps.store(steps);
+    g_pass_base.store(g_sample_pass.load());
+    sd_cancel_generation(g_ctx, SD_CANCEL_RESET);
+
+    sd_video_generation_result_t* result = nullptr;
+    bool ok = generate_video(g_ctx, &g, &result);
+    if (!ok || !result || result->frame_count < 1) {
+        if (result) free_sd_video_generation_result(result);
+        throw_java(env, "Video generation failed or was cancelled.");
+        return nullptr;
+    }
+    std::vector<uint8_t> all;
+    for (int k = 0; k < result->frame_count; k++) {
+        sd_image_t& img = result->frames[k];
+        if (!img.data || (int)img.width != width || (int)img.height != height || img.channel < 3) continue;
+        size_t off = all.size();
+        all.resize(off + npx * 3);
+        for (size_t i = 0; i < npx; i++) memcpy(&all[off + i * 3], &img.data[i * img.channel], 3);
+    }
+    free_sd_video_generation_result(result);
+    if (all.empty()) {
+        throw_java(env, "Video generation produced no usable frames.");
+        return nullptr;
+    }
+    jbyteArray out = env->NewByteArray((jsize)all.size());
+    env->SetByteArrayRegion(out, 0, (jsize)all.size(), reinterpret_cast<const jbyte*>(all.data()));
+    return out;
+}
+
+// Writes n RGB frames (n * w*h*3 bytes) as a looping animated GIF.
+JNIEXPORT jboolean JNICALL
+Java_com_hcode91_stableandroid_SdNative_writeGif(JNIEnv* env, jclass, jstring jpath, jbyteArray jframes,
+                                                 jint width, jint height, jint fps) {
+    const size_t frame = (size_t)width * (size_t)height * 3;
+    const size_t len = (size_t)env->GetArrayLength(jframes);
+    if (frame == 0 || len < frame) return JNI_FALSE;
+    std::vector<uint8_t> data(len);
+    env->GetByteArrayRegion(jframes, 0, (jsize)len, reinterpret_cast<jbyte*>(data.data()));
+    return write_gif(jstr(env, jpath), data.data(), width, height, (int)(len / frame), fps) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

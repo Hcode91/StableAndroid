@@ -47,7 +47,7 @@ target_include_directories(ggml-vulkan PRIVATE ${TP_DIR}/spirv-headers/include)
 # and must be packaged (and extracted) with the app.
 add_subdirectory(${TP_DIR}/libadrenotools adrenotools)
 
-add_library(stableandroid SHARED sd_jni.cpp vk_shim.cpp)
+add_library(stableandroid SHARED sd_jni.cpp vk_shim.cpp gif_writer.cpp)
 add_dependencies(stableandroid main_hook file_redirect_hook gsl_alloc_hook hook_impl)
 target_include_directories(stableandroid PRIVATE ${SDCPP_DIR}/include)
 target_link_libraries(stableandroid PRIVATE stable-diffusion adrenotools android log)

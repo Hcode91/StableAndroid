@@ -36,6 +36,20 @@ tap **Generate**. **Denoise** controls how far it moves from the photo: ~0.45 st
 changes a lot. Press and hold a result to compare with the original; **Edit in Inpaint** sends it
 to the Inpaint tab.
 
+### Inpaint queue
+
+To inpaint several photos unattended: open a photo, paint its mask, set the prompt and tap
+**Add to queue**; repeat for each photo; then tap **Run queue**. Each photo keeps the prompt and
+settings it was added with, results are saved to `Pictures/StableAndroid` as they finish, and
+**Stop** lets the current photo finish first. The queue is not kept if the app is closed.
+
+### Video tab (experimental)
+
+Image-to-video with AnimateDiff: 8–16 frames at 8 fps, saved as a looping GIF. Needs a motion
+module (`mm_sd15_v3.safetensors`, about 836 MB) chosen under **Model → Choose motion module**,
+then **Load** tapped while on the Video tab. Uses normal sampling (Euler, Karras, about 20 steps,
+CFG 7); the LCM LoRA is not used. On a phone CPU this is very slow and may run out of memory.
+
 ### Text tab
 
 Text to image: type a prompt, pick a **Size**, optionally a Style preset, and tap **Create**.

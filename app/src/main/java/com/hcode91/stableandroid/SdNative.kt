@@ -23,7 +23,29 @@ object SdNative {
         mmap: Boolean,
         backend: String,
         taesdPath: String?,
+        motionModulePath: String?,
     ): String
+
+    /** Image-to-video (AnimateDiff). Returns the frames' RGB bytes concatenated. */
+    @JvmStatic external fun video(
+        init: ByteArray,
+        width: Int,
+        height: Int,
+        prompt: String,
+        negativePrompt: String,
+        steps: Int,
+        cfg: Float,
+        strength: Float,
+        seed: Long,
+        sampler: Int,
+        scheduler: Int,
+        clipSkip: Int,
+        frames: Int,
+        fps: Int,
+    ): ByteArray
+
+    /** Writes concatenated RGB frames as a looping GIF. */
+    @JvmStatic external fun writeGif(path: String, frames: ByteArray, width: Int, height: Int, fps: Int): Boolean
 
     @JvmStatic external fun freeModel()
     @JvmStatic external fun isLoaded(): Boolean

@@ -44,7 +44,8 @@ class MainActivity : Activity() {
         Choice("Default", -1), Choice("Discrete", 0), Choice("Karras", 1),
         Choice("Exponential", 2), Choice("LCM", 9),
     )
-    private val sizes = listOf(Choice("384", 384), Choice("512", 512), Choice("640", 640), Choice("768", 768))
+    private val sizes = listOf(Choice("384", 384), Choice("512", 512), Choice("640", 640), Choice("768", 768),
+        Choice("256 (fastest)", 256))
     private data class Style(val label: String, val tags: String, val negative: String) {
         override fun toString() = label
     }
@@ -111,9 +112,17 @@ class MainActivity : Activity() {
     private var stylizeSource: Bitmap? = null
     private var mode = 0   // 0 = Inpaint, 1 = Img2Img, 2 = Text to image
     // Img2Img and Text each keep their own results (index = mode).
-    private val galResults = arrayOf(mutableListOf<Bitmap>(), mutableListOf<Bitmap>(), mutableListOf<Bitmap>())
-    private val galSeeds = arrayOf(mutableListOf<Long>(), mutableListOf<Long>(), mutableListOf<Long>())
-    private val galIndex = IntArray(3)
+    private val galResults = Array(4) { mutableListOf<Bitmap>() }
+    private val galSeeds = Array(4) { mutableListOf<Long>() }
+    private val galIndex = IntArray(4)
+    // Video tab (mode 3): the last clip's raw frames, kept for saving as a GIF.
+    private var videoBytes: ByteArray? = null
+    private var videoW = 0
+    private var videoH = 0
+    private val videoFps = 8
+    private var loadedWithMotion = false
+    private val frameChoices = listOf(Choice("8 frames (1 second)", 8), Choice("12 frames (1.5 seconds)", 12),
+        Choice("16 frames (2 seconds)", 16))
     private val createResults get() = galResults[mode]
     private val createSeeds get() = galSeeds[mode]
     private var createIndex
@@ -171,6 +180,8 @@ class MainActivity : Activity() {
         setupListeners()
         showPreviousSession()
         checkGpuCrashMarker()
+        // The queue only lives for one session; drop photos left over from a previous one.
+        try { queueDir().listFiles()?.forEach { it.delete() } } catch (_: Throwable) { }
 
         thread {
             val info = (try { SdNative.systemInfo() } catch (t: Throwable) { "native library failed to load: $t" }) +
@@ -318,8 +329,17 @@ class MainActivity : Activity() {
         }
         btnGenerate.setOnClickListener { generate() }
         btnCancel.setOnClickListener {
+            // In a queue, the first tap lets the current photo finish and then stops.
+            if (queueRunning && !queueStop) {
+                queueStop = true
+                btnCancel.text = "Stop now"
+                appendLog("Stopping the queue after the current photo…")
+            } else if (queueRunning) {
+                SdNative.cancel(false)
+                txtStatus.text = "Cancelling…"
+            }
             // With several images, the first tap keeps the ones already finished.
-            if (batchSize > 1 && !stopRequested) {
+            else if (batchSize > 1 && !stopRequested) {
                 stopRequested = true
                 SdNative.cancel(true)
                 btnCancel.text = "Stop now"
@@ -335,6 +355,15 @@ class MainActivity : Activity() {
         btnTabInpaint.setOnClickListener { switchMode(0) }
         btnTabCreate.setOnClickListener { switchMode(1) }
         btnTabText.setOnClickListener { switchMode(2) }
+        findViewById<Button>(R.id.btnTabVideo).setOnClickListener { switchMode(3) }
+        findViewById<Button>(R.id.btnQueueAdd).setOnClickListener { addToQueue() }
+        findViewById<Button>(R.id.btnQueueRun).setOnClickListener { runQueue() }
+        findViewById<Button>(R.id.btnQueueClear).setOnClickListener { clearQueue() }
+        findViewById<Button>(R.id.btnChooseMotion).setOnClickListener { if (!busy) pickFile(REQ_MOTION) }
+        findViewById<Spinner>(R.id.spinFrames).apply {
+            adapter = adapter(frameChoices)
+            setSelection(prefs.getInt("frames", 0).coerceIn(0, frameChoices.size - 1))
+        }
         findViewById<Button>(R.id.btnStylePhoto).setOnClickListener { pickImage(REQ_STYLE_IMAGE) }
         btnSave.setOnClickListener { saveResult() }
         btnUseResult.setOnClickListener {
@@ -541,6 +570,7 @@ class MainActivity : Activity() {
             REQ_MODEL -> importModel(uri)
             REQ_LORA -> importLora(uri)
             REQ_DRIVER -> installDriver(uri)
+            REQ_MOTION -> importMotion(uri)
             REQ_MODEL_FOLDER -> {
                 try {
                     contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -580,6 +610,7 @@ class MainActivity : Activity() {
         }
         uri?.let {
             if (mode == 2) switchMode(0)
+            if (mode == 3) { openStylizeImage(it); return }
             if (mode == 1) openStylizeImage(it) else openImage(it)
         }
     }
@@ -612,7 +643,7 @@ class MainActivity : Activity() {
     private fun refreshStylizePreview() {
         if (mode == 0) return
         val res = createResults.getOrNull(createIndex)
-        val src = if (mode == 1) stylizeSource else null
+        val src = if (mode == 1 || mode == 3) stylizeSource else null
         canvas.preview = res ?: src
         canvas.previewOriginal = if (res != null) src else null
     }
@@ -736,6 +767,8 @@ class MainActivity : Activity() {
         val mmap = chkMmap.isChecked
         val computeMode = (spinCompute.selectedItem as Choice).value
         val fastVae = chkFastVae.isChecked
+        val videoTabAtLoad = mode == 3
+        if (videoTabAtLoad && motionFile() == null) toast("No motion module chosen yet, so video won't work until you add one")
         // ggml looks at the GPU while loading even for CPU runs, so a custom driver counts as "in use".
         val wantGpu = computeMode != 0
         if (customDriverActive) markGpuInFlight(true)
@@ -767,7 +800,10 @@ class MainActivity : Activity() {
                 }
                 val taesd = if (fastVae) taesdFile()?.absolutePath else null
                 if (fastVae && taesd == null) ui.post { appendLog("Fast VAE file missing from this build; using the normal VAE.") }
-                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap, backend, taesd)
+                // The motion module costs memory, so it is only loaded when Load is tapped on the Video tab.
+                val motion = if (videoTabAtLoad) motionFile()?.absolutePath else null
+                val version = SdNative.loadModel(file.absolutePath, null, threads, wtype, flash, mmap, backend, taesd, motion)
+                loadedWithMotion = motion != null
                 loadedWithTae = taesd != null
                 loadedIsInpaint = version.contains("Inpaint", ignoreCase = true)
                 markGpuInFlight(false)
@@ -900,7 +936,7 @@ class MainActivity : Activity() {
             .setTitle("How much detail?")
             .setItems(arrayOf("Short", "Detailed", "Very detailed (paragraph)")) { _, which ->
                 describeDetail = which
-                val src = when (mode) { 0 -> canvas.image; 1 -> stylizeSource; else -> null }
+                val src = when (mode) { 0 -> canvas.image; 1, 3 -> stylizeSource; else -> null }
                 if (src != null) runDescribe(src, recycleAfter = false)
                 else {
                     val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
@@ -953,7 +989,7 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- presets (one list per tab)
 
-    private fun tabName() = when (mode) { 0 -> "Inpaint"; 1 -> "Img2Img"; else -> "Text" }
+    private fun tabName() = when (mode) { 0 -> "Inpaint"; 1 -> "Img2Img"; 2 -> "Text"; else -> "Video" }
 
     private fun presetStore(): org.json.JSONObject =
         try { org.json.JSONObject(prefs.getString("presets_$mode", "{}") ?: "{}") }
@@ -1106,7 +1142,63 @@ class MainActivity : Activity() {
 
     private var skipSettingsCheck = false
 
+    /** Everything one inpaint run needs, captured from the screen at the moment it was requested. */
+    private class InpaintParams(
+        val prompt: String, val negative: String, val steps: Int, val cfg: Float, val strength: Float,
+        val seed: Long, val sampler: Int, val scheduler: Int, val size: Int, val onlyMasked: Boolean,
+        val blend: Boolean, val colorMatch: Boolean, val feather: Float, val clipSkip: Int,
+        val tiling: Boolean, val count: Int, val summary: String,
+    )
+
+    private fun readInpaintParams(): InpaintParams {
+        var seed = editSeed.text.toString().toLongOrNull() ?: -1L
+        if (seed < 0) seed = Random.nextLong(0, Int.MAX_VALUE.toLong())
+        return InpaintParams(
+            prompt = editPrompt.text.toString(),
+            negative = editNegative.text.toString(),
+            steps = (editSteps.text.toString().toIntOrNull() ?: 20).coerceIn(1, 150),
+            cfg = editCfg.text.toString().toFloatOrNull() ?: 7f,
+            strength = (editStrength.text.toString().toFloatOrNull() ?: 1f).coerceIn(0.01f, 1f),
+            seed = seed,
+            sampler = (spinSampler.selectedItem as Choice).value,
+            scheduler = (spinScheduler.selectedItem as Choice).value,
+            size = (spinSize.selectedItem as Choice).value,
+            onlyMasked = (spinArea.selectedItem as Choice).value == 1,
+            blend = chkBlend.isChecked,
+            colorMatch = findViewById<CheckBox>(R.id.chkColorMatch).isChecked,
+            // Slider 0–100 -> soft edge of 0.4%–20% of the mask's longer side.
+            feather = 0.004f + 0.196f * (findViewById<SeekBar>(R.id.seekFeather).progress / 100f),
+            clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1,
+            tiling = chkTiling.isChecked && !loadedWithTae,
+            count = (editImages.text.toString().toIntOrNull() ?: 1).coerceIn(1, 8),
+            summary = settingsLine(),
+        )
+    }
+
+    /** Runs one inpaint on the worker thread and returns the finished full-size images. */
+    private fun inpaintCore(image: Bitmap, mask: Bitmap, p: InpaintParams): List<Bitmap> {
+        val job = ImageOps.prepare(image, mask, p.onlyMasked, p.size, 32, p.feather)
+            ?: throw IllegalStateException("Paint a mask over the area you want to change first")
+        ui.post {
+            appendLog("Inpainting ${p.count}× ${job.width}×${job.height} from region " +
+                "${job.region.toShortString()}, denoise ${p.strength}, seeds ${p.seed}–${p.seed + p.count - 1}\n  " + p.summary)
+        }
+        if (loadedBackend != "cpu") markGpuInFlight(true)
+        val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, p.prompt, p.negative,
+            p.steps, p.cfg, p.strength, p.seed, p.sampler, p.scheduler, p.clipSkip, p.tiling, p.count,
+            loraFile?.absolutePath, loraStrength())
+        markGpuInFlight(false)
+        val frame = job.width * job.height * 3
+        return (0 until out.size / frame).map { k ->
+            val gen = ImageOps.fromRgb(out, job.width, job.height, k * frame)
+            val f = ImageOps.composite(image, mask, job, gen, p.blend, p.colorMatch)
+            gen.recycle()
+            f
+        }
+    }
+
     private fun generate() {
+        if (mode == 3) { createVideo(); return }
         if (mode != 0) { create(); return }
         if (busy) return
         if (loadedModelName == null) { toast("Load a model first"); return }
@@ -1117,30 +1209,12 @@ class MainActivity : Activity() {
         // If a result is showing, inpaint on top of the original again.
         canvas.showResult = false
 
-        val prompt = editPrompt.text.toString()
-        val negative = editNegative.text.toString()
-        val steps = (editSteps.text.toString().toIntOrNull() ?: 20).coerceIn(1, 150)
-        val cfg = editCfg.text.toString().toFloatOrNull() ?: 7f
-        val strength = (editStrength.text.toString().toFloatOrNull() ?: 1f).coerceIn(0.01f, 1f)
-        var seed = editSeed.text.toString().toLongOrNull() ?: -1L
-        if (seed < 0) seed = Random.nextLong(0, Int.MAX_VALUE.toLong())
-        val sampler = (spinSampler.selectedItem as Choice).value
-        val scheduler = (spinScheduler.selectedItem as Choice).value
-        val size = (spinSize.selectedItem as Choice).value
-        val onlyMasked = (spinArea.selectedItem as Choice).value == 1
-        val blend = chkBlend.isChecked
-        val colorMatch = findViewById<CheckBox>(R.id.chkColorMatch).isChecked
-        // Slider 0–100 -> soft edge of 0.4%–20% of the mask's longer side.
-        val feather = 0.004f + 0.196f * (findViewById<SeekBar>(R.id.seekFeather).progress / 100f)
-        val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
-        val tiling = chkTiling.isChecked && !loadedWithTae
-        val count = (editImages.text.toString().toIntOrNull() ?: 1).coerceIn(1, 8)
+        val p = readInpaintParams()
         val maskCopy = mask.copy(Bitmap.Config.ALPHA_8, false)
-
-        lastSeed = seed
-        batchSize = count
+        lastSeed = p.seed
+        batchSize = p.count
         stopRequested = false
-        btnCancel.text = if (count > 1) "Stop" else "Cancel"
+        btnCancel.text = if (p.count > 1) "Stop" else "Cancel"
         savePrefs()
         autoSaved = false
         setBusy(true, "Preparing…")
@@ -1149,31 +1223,14 @@ class MainActivity : Activity() {
 
         thread(name = "sd-gen") {
             try {
-                val job = ImageOps.prepare(image, maskCopy, onlyMasked, size, 32, feather)
-                    ?: throw IllegalStateException("Paint a mask over the area you want to change first")
-                ui.post {
-                    appendLog("Inpainting $count× ${job.width}×${job.height} from region " +
-                        "${job.region.toShortString()}, denoise $strength, seeds $seed–${seed + count - 1}\n  " + settingsLine())
-                }
-                if (loadedBackend != "cpu") markGpuInFlight(true)
-                val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, prompt, negative,
-                    steps, cfg, strength, seed, sampler, scheduler, clipSkip, tiling, count,
-                    loraFile?.absolutePath, loraStrength())
-                markGpuInFlight(false)
-                val frame = job.width * job.height * 3
-                val n = out.size / frame
-                val finals = (0 until n).map { k ->
-                    val gen = ImageOps.fromRgb(out, job.width, job.height, k * frame)
-                    val f = ImageOps.composite(image, maskCopy, job, gen, blend, colorMatch)
-                    gen.recycle()
-                    f
-                }
+                val finals = inpaintCore(image, maskCopy, p)
+                val n = finals.size
                 val secs = (System.currentTimeMillis() - started) / 1000.0
                 ui.post {
                     clearResults()
                     results += finals
                     autoSaveIfHidden(finals)
-                    resultSeeds += (0 until n).map { seed + it }
+                    resultSeeds += (0 until n).map { p.seed + it }
                     setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
                     showResultAt(0)
                 }
@@ -1183,6 +1240,261 @@ class MainActivity : Activity() {
             } finally {
                 maskCopy.recycle()
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- video (AnimateDiff trial)
+
+    private fun motionFile(): File? =
+        ModelStore.dir(this, "motion").listFiles()?.firstOrNull { it.isFile && !it.name.endsWith(".part") }
+
+    private fun importMotion(uri: Uri) {
+        if (busy) return
+        val (name, _) = ModelStore.queryName(this, uri)
+        setBusy(true, "Copying motion module $name…")
+        thread(name = "motion-import") {
+            try {
+                val file = ModelStore.import(this, uri, "motion") { copied, total ->
+                    ui.post { if (total > 0) txtStatus.text = "Copying motion module… ${ModelStore.gb(copied)} / ${ModelStore.gb(total)}" }
+                }
+                ModelStore.checkFile(file)?.let { file.delete(); throw IllegalStateException(it) }
+                ui.post {
+                    appendLog("Motion module: ${file.name}. Go to the Video tab and tap Load to use it.")
+                    setBusy(false, "Motion module ready")
+                }
+            } catch (t: Throwable) {
+                ui.post { setBusy(false, "Motion module failed: ${t.message}") }
+            }
+        }
+    }
+
+    /** Plays the clip in the preview while the Video tab is showing. */
+    private val videoTicker = object : Runnable {
+        override fun run() {
+            if (mode != 3) return
+            val frames = galResults[3]
+            if (!busy && frames.size > 1) {
+                galIndex[3] = (galIndex[3] + 1) % frames.size
+                canvas.previewOriginal = null
+                canvas.preview = frames[galIndex[3]]
+            }
+            ui.postDelayed(this, 1000L / videoFps)
+        }
+    }
+
+    private fun createVideo() {
+        if (busy) return
+        if (loadedModelName == null) { toast("Load a model first"); return }
+        if (motionFile() == null) { toast("Add a motion module first: Model → Choose motion module"); return }
+        if (!loadedWithMotion) { toast("Tap Load (Model section) while on the Video tab to load the motion module"); return }
+        val source = stylizeSource ?: run { toast("Tap Photo to choose a picture first"); return }
+        val prompt = editPrompt.text.toString().trim()
+        val negative = editNegative.text.toString().trim()
+        val steps = (editSteps.text.toString().toIntOrNull() ?: 20).coerceIn(1, 150)
+        val cfg = editCfg.text.toString().toFloatOrNull() ?: 7f
+        val strength = (editStrength.text.toString().toFloatOrNull() ?: 0.75f).coerceIn(0.05f, 1f)
+        var seed = editSeed.text.toString().toLongOrNull() ?: -1L
+        if (seed < 0) seed = Random.nextLong(0, Int.MAX_VALUE.toLong())
+        val sampler = (spinSampler.selectedItem as Choice).value
+        val scheduler = (spinScheduler.selectedItem as Choice).value
+        val size = (spinSize.selectedItem as Choice).value
+        val clipSkip = editClipSkip.text.toString().toIntOrNull() ?: -1
+        val frames = (findViewById<Spinner>(R.id.spinFrames).selectedItem as Choice).value
+        prefs.edit().putInt("frames", findViewById<Spinner>(R.id.spinFrames).selectedItemPosition).apply()
+
+        lastSeed = seed
+        batchSize = 1
+        stopRequested = false
+        btnCancel.text = "Cancel"
+        savePrefs()
+        autoSaved = false
+        setBusy(true, "Preparing video…")
+        statusPrefix = "Video ($frames frames) · "
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val started = System.currentTimeMillis()
+
+        thread(name = "sd-video") {
+            try {
+                val scale = size.toFloat() / maxOf(source.width, source.height)
+                val w = maxOf(64, Math.round(source.width * scale / 64f) * 64)
+                val h = maxOf(64, Math.round(source.height * scale / 64f) * 64)
+                val scaled = Bitmap.createScaledBitmap(source, w, h, true)
+                val rgb = ImageOps.rgbBytes(scaled)
+                if (scaled !== source) scaled.recycle()
+                ui.post {
+                    appendLog("Video: $frames frames at ${w}×$h, denoise $strength, seed $seed\n  " + settingsLine() +
+                        "\n  (the LoRA is not used for video)")
+                }
+                if (loadedBackend != "cpu") markGpuInFlight(true)
+                val out = SdNative.video(rgb, w, h, prompt, negative, steps, cfg, strength, seed, sampler, scheduler,
+                    clipSkip, frames, videoFps)
+                markGpuInFlight(false)
+                val frame = w * h * 3
+                val n = out.size / frame
+                val imgs = (0 until n).map { ImageOps.fromRgb(out, w, h, it * frame) }
+                val secs = (System.currentTimeMillis() - started) / 1000.0
+                ui.post {
+                    statusPrefix = ""
+                    galResults[3].forEach { it.recycle() }
+                    galResults[3].clear(); galSeeds[3].clear(); galIndex[3] = 0
+                    galResults[3] += imgs
+                    galSeeds[3] += List(n) { seed }
+                    videoBytes = out; videoW = w; videoH = h
+                    setBusy(false, "Video done: $n frames in ${"%.0f".format(secs)}s (${"%.0f".format(secs / 60)} min)")
+                    appendLog("Video finished: $n frames in ${"%.0f".format(secs)}s")
+                    if (!visible || findViewById<CheckBox>(R.id.chkAutoSave).isChecked) saveVideoGif()
+                    if (mode == 3) { canvas.preview = imgs.firstOrNull(); updateUi() }
+                }
+            } catch (t: Throwable) {
+                markGpuInFlight(false)
+                statusPrefix = ""
+                ui.post { setBusy(false, "Video failed: ${t.message}"); pollNative(); gpuFailureHint() }
+            } finally {
+                ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            }
+        }
+    }
+
+    /** Saves the last clip to Pictures/StableAndroid as a looping GIF. */
+    private fun saveVideoGif() {
+        val bytes = videoBytes ?: return
+        val w = videoW; val h = videoH
+        thread(name = "gif-save") {
+            val tmp = File(filesDir, "clip.gif")
+            try {
+                if (!SdNative.writeGif(tmp.absolutePath, bytes, w, h, videoFps)) throw IllegalStateException("couldn't write the GIF")
+                val resolver = applicationContext.contentResolver
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, "video_${System.currentTimeMillis()}.gif")
+                    put(MediaStore.Images.Media.MIME_TYPE, "image/gif")
+                    put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/StableAndroid")
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                    ?: throw IllegalStateException("MediaStore insert failed")
+                resolver.openOutputStream(uri)?.use { o -> tmp.inputStream().use { it.copyTo(o) } }
+                values.clear()
+                values.put(MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+                ui.post { autoSaved = true; appendLog("Saved the clip as a GIF in Pictures/StableAndroid"); updateUi() }
+            } catch (t: Throwable) {
+                ui.post { appendLog("E Saving the GIF failed: ${t.message}"); toast("Saving the GIF failed: ${t.message}") }
+            } finally {
+                tmp.delete()
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------- inpaint queue
+
+    private class QueueItem(val id: Int, val name: String, val params: InpaintParams)
+    private val queue = mutableListOf<QueueItem>()
+    private var queueNextId = 1
+    @Volatile private var queueRunning = false
+    @Volatile private var queueStop = false
+
+    private fun queueDir() = File(filesDir, "queue").apply { mkdirs() }
+
+    /** Stores the open photo, its mask and the current settings as one queued job. */
+    private fun addToQueue() {
+        if (busy) return
+        val image = canvas.image ?: run { toast("Open an image first"); return }
+        val mask = canvas.mask ?: return
+        if (!canvas.hasMask()) { toast("Paint a mask over the area to change first"); return }
+        val p = readInpaintParams()
+        val id = queueNextId++
+        val imgCopy = image.copy(Bitmap.Config.ARGB_8888, false)
+        val maskCopy = mask.copy(Bitmap.Config.ALPHA_8, false)
+        setBusy(true, "Adding to queue…")
+        thread(name = "queue-add") {
+            try {
+                File(queueDir(), "$id.img.png").outputStream().use { imgCopy.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                // ALPHA_8 can't be written directly; store the alpha in an ARGB image.
+                val px = ImageOps.alphaOf(maskCopy)
+                val argb = Bitmap.createBitmap(IntArray(px.size) { (px[it].toInt() and 0xFF) shl 24 },
+                    maskCopy.width, maskCopy.height, Bitmap.Config.ARGB_8888)
+                File(queueDir(), "$id.mask.png").outputStream().use { argb.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                argb.recycle()
+                ui.post {
+                    queue += QueueItem(id, "Photo $id (${imgCopy.width}×${imgCopy.height})", p)
+                    canvas.clearMask()
+                    setBusy(false, "Added. ${queue.size} in the queue. Open the next photo, or tap Run queue.")
+                }
+            } catch (t: Throwable) {
+                ui.post { setBusy(false, "Couldn't add to the queue: ${t.message}") }
+            } finally {
+                imgCopy.recycle(); maskCopy.recycle()
+            }
+        }
+    }
+
+    private fun clearQueue() {
+        if (busy) return
+        queue.clear()
+        queueDir().listFiles()?.forEach { it.delete() }
+        txtStatus.text = "Queue cleared"
+        updateUi()
+    }
+
+    private fun runQueue() {
+        if (busy) return
+        if (queue.isEmpty()) { toast("The queue is empty. Paint a mask and tap Add to queue."); return }
+        if (loadedModelName == null) { toast("Load a model first"); return }
+        if (!skipSettingsCheck && warnOnSettingsMismatch { runQueue() }) return
+        skipSettingsCheck = false
+        val items = queue.toList()
+        queueRunning = true
+        queueStop = false
+        batchSize = 1
+        stopRequested = false
+        btnCancel.text = "Stop"
+        setBusy(true, "Starting the queue…")
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val started = System.currentTimeMillis()
+        thread(name = "sd-queue") {
+            var done = 0
+            var saved = 0
+            var failed = 0
+            for ((i, item) in items.withIndex()) {
+                if (queueStop) break
+                statusPrefix = "Photo ${i + 1}/${items.size} · "
+                ui.post { appendLog("Queue: ${item.name}, ${i + 1} of ${items.size}") }
+                var image: Bitmap? = null
+                var mask: Bitmap? = null
+                try {
+                    val imgFile = File(queueDir(), "${item.id}.img.png")
+                    val maskFile = File(queueDir(), "${item.id}.mask.png")
+                    image = android.graphics.BitmapFactory.decodeFile(imgFile.absolutePath)
+                        ?: throw IllegalStateException("queued photo is missing")
+                    val maskArgb = android.graphics.BitmapFactory.decodeFile(maskFile.absolutePath)
+                        ?: throw IllegalStateException("queued mask is missing")
+                    mask = maskArgb.extractAlpha()
+                    maskArgb.recycle()
+                    val finals = inpaintCore(image, mask, item.params)
+                    for (f in finals) { try { writePng(f); saved++ } catch (_: Throwable) { }; f.recycle() }
+                    done++
+                    imgFile.delete(); maskFile.delete()
+                    ui.post { queue.removeAll { it.id == item.id }; updateUi() }
+                } catch (t: Throwable) {
+                    markGpuInFlight(false)
+                    if (queueStop) break          // cancelled by the user: leave it queued
+                    failed++
+                    ui.post { appendLog("E Queue: ${item.name} failed: ${t.message}. Moving on.") }
+                } finally {
+                    image?.recycle(); mask?.recycle()
+                }
+            }
+            statusPrefix = ""
+            queueRunning = false
+            val secs = (System.currentTimeMillis() - started) / 1000
+            ui.post {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                val msg = "Queue ${if (queueStop) "stopped" else "finished"}: $done photo${if (done == 1) "" else "s"} done, " +
+                    "$saved image${if (saved == 1) "" else "s"} saved" + (if (failed > 0) ", $failed failed" else "") +
+                    (if (queue.isNotEmpty()) ", ${queue.size} still queued" else "") + " (${secs}s)"
+                appendLog(msg)
+                setBusy(false, msg)
             }
         }
     }
@@ -1214,14 +1526,17 @@ class MainActivity : Activity() {
         updateUi()
     }
 
-    private fun promptKey(m: Int) = when (m) { 0 -> "prompt"; 1 -> "prompt_create"; else -> "prompt_text" }
-    private fun negativeKey(m: Int) = when (m) { 0 -> "negative"; 1 -> "negative_create"; else -> "negative_text" }
+    private fun promptKey(m: Int) = when (m) { 0 -> "prompt"; 1 -> "prompt_create"; 2 -> "prompt_text"; else -> "prompt_video" }
+    private fun negativeKey(m: Int) = when (m) { 0 -> "negative"; 1 -> "negative_create"; 2 -> "negative_text"; else -> "negative_video" }
 
-    private fun strengthKey(m: Int) = if (m == 0) "strength" else "strength_stylize"
+    private fun strengthKey(m: Int) = when (m) { 0 -> "strength"; 3 -> "strength_video"; else -> "strength_stylize" }
 
     private fun loadPromptsFor(m: Int) {
-        editStrength.setText(prefs.getString(strengthKey(m), if (m == 0) "1.0" else "0.6"))
-        if (m == 0) {
+        editStrength.setText(prefs.getString(strengthKey(m), when (m) { 0 -> "1.0"; 3 -> "0.75"; else -> "0.6" }))
+        if (m == 3) {
+            editPrompt.setText(prefs.getString(promptKey(3), ""))
+            editNegative.setText(prefs.getString(negativeKey(3), "blurry, low quality, deformed, static, watermark, text"))
+        } else if (m == 0) {
             editPrompt.setText(prefs.getString(promptKey(0), ""))
             editNegative.setText(prefs.getString(negativeKey(0), "blurry, low quality, deformed, watermark, text"))
         } else if (m == 2) {
@@ -1261,8 +1576,25 @@ class MainActivity : Activity() {
         findViewById<View>(R.id.rowFeather).visibility = inpaintVis
         findViewById<View>(R.id.chkColorMatch).visibility = inpaintVis
         findViewById<View>(R.id.rowCreate).visibility = if (create) View.VISIBLE else View.GONE
-        findViewById<View>(R.id.chkSharpen).visibility = if (create) View.VISIBLE else View.GONE
-        btnGenerate.text = when (mode) { 0 -> "Inpaint"; 1 -> "Generate"; else -> "Create" }
+        findViewById<View>(R.id.chkSharpen).visibility = if (create && mode != 3) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.rowVideo).visibility = if (mode == 3) View.VISIBLE else View.GONE
+        findViewById<View>(R.id.rowQueue).visibility = inpaintVis
+        btnGenerate.text = when (mode) { 0 -> "Inpaint"; 1 -> "Generate"; 2 -> "Create"; else -> "Make video" }
+        findViewById<View>(R.id.btnTabVideo).alpha = if (mode == 3) 1f else 0.5f
+        if (mode == 3) {
+            if (!prefs.getBoolean("videoTuned", false)) {
+                // AnimateDiff needs normal (non-LCM) sampling; start small so the first try is quick.
+                prefs.edit().putBoolean("videoTuned", true).apply()
+                spinSampler.setSelection(samplers.indexOfFirst { it.label == "Euler" })
+                spinScheduler.setSelection(schedulers.indexOfFirst { it.label == "Karras" })
+                editSteps.setText("20"); editCfg.setText("7"); editStrength.setText("0.75")
+                spinSize.setSelection(sizes.indexOfFirst { it.value == 256 })
+                appendLog("Video tab: set Euler, Karras, 20 steps, CFG 7, denoise 0.75, working size 256. " +
+                    "These sampler settings are shared with the other tabs, so switch back (or use a preset) afterwards.")
+            }
+            ui.removeCallbacks(videoTicker)
+            ui.post(videoTicker)
+        }
         btnUseResult.text = if (create) "Edit in Inpaint" else "Keep & continue"
         editPrompt.hint = when (mode) {
             0 -> "what should appear in the masked area"
@@ -1481,6 +1813,7 @@ class MainActivity : Activity() {
     }
 
     private fun saveResult() {
+        if (mode == 3) { saveVideoGif(); return }
         val bmp = currentResult() ?: return
         thread {
             try {
@@ -1565,10 +1898,17 @@ class MainActivity : Activity() {
         }
         btnGenerate.isEnabled = !busy && loaded && when (mode) {
             0 -> canvas.image != null
-            1 -> stylizeSource != null
+            1, 3 -> stylizeSource != null
             else -> true
         }
         btnTabText.isEnabled = !busy
+        findViewById<View>(R.id.btnTabVideo).isEnabled = !busy
+        findViewById<Button>(R.id.btnQueueAdd).isEnabled = !busy && canvas.image != null
+        findViewById<Button>(R.id.btnQueueRun).apply { isEnabled = !busy && loaded && queue.isNotEmpty(); text = "Run queue (${queue.size})" }
+        findViewById<Button>(R.id.btnQueueClear).isEnabled = !busy && queue.isNotEmpty()
+        findViewById<TextView>(R.id.txtMotion).text = motionFile()?.let {
+            "Video motion module: ${it.name}" + if (loadedWithMotion) " (loaded)" else " (tap Load while on the Video tab)"
+        } ?: "Video motion module: none"
         btnTabInpaint.isEnabled = !busy
         btnTabCreate.isEnabled = !busy
         if (mode == 1) canvas.previewHint = "Tap Photo to choose a picture to transform"
@@ -1601,6 +1941,7 @@ class MainActivity : Activity() {
             if (createResults.isNotEmpty()) {
                 txtResult.text = "Result ${createIndex + 1}/${createResults.size} · seed ${createSeeds[createIndex]}" +
                     if (mode == 1) " · hold to compare" else ""
+                if (mode == 3) txtResult.text = "Clip: ${createResults.size} frames · seed ${createSeeds.firstOrNull() ?: ""}"
             }
         } else rowResults.visibility = if (results.isNotEmpty()) View.VISIBLE else View.GONE
         if (mode == 0 && results.isNotEmpty()) {
@@ -1755,5 +2096,6 @@ class MainActivity : Activity() {
         private const val REQ_DESCRIBE_FILES = 6
         private const val REQ_DESCRIBE_IMAGE = 7
         private const val REQ_MODEL_FOLDER = 8
+        private const val REQ_MOTION = 9
     }
 }

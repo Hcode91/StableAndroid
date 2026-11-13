@@ -26,6 +26,11 @@
             android:id="@+id/btnTabText"
             style="@style/TabBtn"
             android:text="Text" />
+
+        <Button
+            android:id="@+id/btnTabVideo"
+            style="@style/TabBtn"
+            android:text="Video" />
     </LinearLayout>
 
     <com.hcode91.stableandroid.MaskCanvasView
@@ -119,6 +124,33 @@
                     android:layout_weight="1"
                     android:enabled="false"
                     android:text="Cancel" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/rowQueue"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btnQueueAdd"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Add to queue" />
+
+                <Button
+                    android:id="@+id/btnQueueRun"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="Run queue" />
+
+                <Button
+                    android:id="@+id/btnQueueClear"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Clear" />
             </LinearLayout>
 
             <ProgressBar
@@ -275,6 +307,17 @@
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
                     android:text="Photo" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/rowVideo"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView style="@style/Label" android:text="Video length (8 frames a second)" />
+                <Spinner android:id="@+id/spinFrames" style="@style/Spin" />
             </LinearLayout>
 
             <CheckBox
@@ -469,6 +512,17 @@
 
             <TextView style="@style/Label" android:text="Run on" />
             <Spinner android:id="@+id/spinCompute" style="@style/Spin" />
+
+            <TextView
+                android:id="@+id/txtMotion"
+                style="@style/Label"
+                android:text="Video motion module: none" />
+
+            <Button
+                android:id="@+id/btnChooseMotion"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Choose motion module (for the Video tab)" />
 
             <TextView
                 android:id="@+id/txtDescribe"
