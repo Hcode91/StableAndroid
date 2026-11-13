@@ -149,9 +149,12 @@ class MaskCanvasView @JvmOverloads constructor(
     private var restoreOrig: Bitmap? = null
     private var restoreMask: Bitmap? = null
     private var restoreCanvas: Canvas? = null
-    private val dstInPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
-        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
-    }
+    // Drawing an ALPHA_8 bitmap with a shader paints the shader's pixels wherever the bitmap is
+    // opaque. With the original photo as the shader, the restore mask reveals the original.
+    private val revealPaint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.ANTI_ALIAS_FLAG)
+    /** Share of the picture restored by the last finishRestore(), 0–100. */
+    var lastRestoredPercent = 0
+        private set
 
     /** The bitmap and canvas the brush currently paints into (inpaint mask or restore mask). */
     private fun targetMask(): Bitmap? = if (restoring) restoreMask else mask
@@ -168,6 +171,8 @@ class MaskCanvasView @JvmOverloads constructor(
         val m = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ALPHA_8)
         restoreBase = base; restoreOrig = original
         restoreMask = m; restoreCanvas = Canvas(m)
+        revealPaint.shader = android.graphics.BitmapShader(original,
+            android.graphics.Shader.TileMode.CLAMP, android.graphics.Shader.TileMode.CLAMP)
         undoStack.forEach { it.recycle() }; undoStack.clear()
         erasing = false
         restoring = true
@@ -179,14 +184,42 @@ class MaskCanvasView @JvmOverloads constructor(
     fun finishRestore(): Bitmap? {
         val base = restoreBase; val orig = restoreOrig; val m = restoreMask
         var out: Bitmap? = null
-        if (base != null && orig != null && m != null && ImageOps.maskBounds(m) != null) {
-            out = base.copy(Bitmap.Config.ARGB_8888, true)
-            val c = Canvas(out)
-            val layer = c.saveLayer(null, null)
-            c.drawBitmap(orig, 0f, 0f, null)
-            c.drawBitmap(m, 0f, 0f, dstInPaint)
-            c.restoreToCount(layer)
+        lastRestoredPercent = 0
+        if (base != null && orig != null && m != null) {
+            // Blend row by row from the mask's alpha, so the result doesn't depend on how the
+            // graphics system treats alpha-only bitmaps.
+            val w = base.width; val h = base.height
+            val alpha = ImageOps.alphaOf(m)
+            var touched = 0L
+            for (a in alpha) if (a.toInt() != 0) touched++
+            if (touched > 0) {
+                val result = base.copy(Bitmap.Config.ARGB_8888, true)
+                val brow = IntArray(w); val orow = IntArray(w)
+                for (y in 0 until h) {
+                    var any = false
+                    val off = y * w
+                    for (x in 0 until w) if (alpha[off + x].toInt() != 0) { any = true; break }
+                    if (!any) continue
+                    result.getPixels(brow, 0, w, 0, y, w, 1)
+                    orig.getPixels(orow, 0, w, 0, y, w, 1)
+                    for (x in 0 until w) {
+                        val a = alpha[off + x].toInt() and 0xFF
+                        if (a == 0) continue
+                        val o = orow[x]
+                        if (a == 255) { brow[x] = o or (0xFF shl 24); continue }
+                        val b = brow[x]
+                        val r = (((o shr 16) and 0xFF) * a + ((b shr 16) and 0xFF) * (255 - a)) / 255
+                        val g = (((o shr 8) and 0xFF) * a + ((b shr 8) and 0xFF) * (255 - a)) / 255
+                        val bl = ((o and 0xFF) * a + (b and 0xFF) * (255 - a)) / 255
+                        brow[x] = (0xFF shl 24) or (r shl 16) or (g shl 8) or bl
+                    }
+                    result.setPixels(brow, 0, w, 0, y, w, 1)
+                }
+                out = result
+                lastRestoredPercent = maxOf(1, (touched * 100 / alpha.size).toInt())
+            }
         }
+        revealPaint.shader = null
         restoring = false
         restoreMask?.recycle()
         restoreBase = null; restoreOrig = null; restoreMask = null; restoreCanvas = null
@@ -286,13 +319,7 @@ class MaskCanvasView @JvmOverloads constructor(
         if (restoring) {
             // Edited image underneath; the original shows through wherever the user has painted.
             restoreBase?.let { canvas.drawBitmap(it, viewMatrix, bitmapPaint) }
-            val o = restoreOrig; val m = restoreMask
-            if (o != null && m != null) {
-                val layer = canvas.saveLayer(null, null)
-                canvas.drawBitmap(o, viewMatrix, bitmapPaint)
-                canvas.drawBitmap(m, viewMatrix, dstInPaint)
-                canvas.restoreToCount(layer)
-            }
+            restoreMask?.let { canvas.drawBitmap(it, viewMatrix, revealPaint) }
             if (cursorX >= 0) {
                 brushOutline.color = if (erasing) Color.CYAN else Color.GREEN
                 canvas.drawCircle(cursorX, cursorY, brushSizePx / 2f, brushOutline)

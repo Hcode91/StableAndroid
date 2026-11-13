@@ -1518,6 +1518,7 @@ class MainActivity : Activity() {
 
     private fun restoreStarted() {
         btnBrush.text = "Brush"
+        appendLog("Restore: started (${canvas.image?.width}×${canvas.image?.height})")
         txtStatus.text = "Paint where the original should come back. Two fingers to zoom. Tap Done restoring when finished."
         updateUi()
     }
@@ -1527,7 +1528,8 @@ class MainActivity : Activity() {
         restoreOrigTemp?.recycle(); restoreOrigTemp = null
         btnBrush.text = "Brush"
         if (out == null) {
-            txtStatus.text = "Nothing was restored"
+            txtStatus.text = "Nothing was restored (no painted area was found)"
+            appendLog("Restore: finished with nothing painted")
             if (results.isNotEmpty()) showResultAt(resultIndex) else updateUi()
             return
         }
@@ -1539,7 +1541,8 @@ class MainActivity : Activity() {
             old.recycle()
         }
         autoSaved = false
-        txtStatus.text = "Original restored where you painted"
+        txtStatus.text = "Original restored over about ${canvas.lastRestoredPercent}% of the picture"
+        appendLog("Restore: original painted back over about ${canvas.lastRestoredPercent}% of a ${out.width}×${out.height} image")
         showResultAt(i)
         if (findViewById<CheckBox>(R.id.chkAutoSave).isChecked) {
             val copy = out.copy(Bitmap.Config.ARGB_8888, false)
