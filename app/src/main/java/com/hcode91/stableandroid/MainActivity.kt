@@ -1192,26 +1192,45 @@ class MainActivity : Activity() {
         )
     }
 
-    /** Runs one inpaint on the worker thread and returns the finished full-size images. */
-    private fun inpaintCore(image: Bitmap, mask: Bitmap, p: InpaintParams): List<Bitmap> {
+    /**
+     * Inpaints on the worker thread, one image at a time, handing each finished full-size image
+     * to [onImage] as soon as it is ready. Returns how many were made. If the user stops part
+     * way, the images already finished are kept.
+     */
+    private fun inpaintCore(image: Bitmap, mask: Bitmap, p: InpaintParams, prefix: String = "",
+                            onImage: (index: Int, result: Bitmap) -> Unit): Int {
         val job = ImageOps.prepare(image, mask, p.onlyMasked, p.size, 32, p.feather)
             ?: throw IllegalStateException("Paint a mask over the area you want to change first")
         ui.post {
             appendLog("Inpainting ${p.count}× ${job.width}×${job.height} from region " +
                 "${job.region.toShortString()}, denoise ${p.strength}, seeds ${p.seed}–${p.seed + p.count - 1}\n  " + p.summary)
         }
-        if (loadedBackend != "cpu") markGpuInFlight(true)
-        val out = SdNative.inpaint(job.rgb, job.mask, job.width, job.height, p.prompt, p.negative,
-            p.steps, p.cfg, p.strength, p.seed, p.sampler, p.scheduler, p.clipSkip, p.tiling, p.count,
-            loraFile?.absolutePath, loraStrength())
-        markGpuInFlight(false)
-        val frame = job.width * job.height * 3
-        return (0 until out.size / frame).map { k ->
-            val gen = ImageOps.fromRgb(out, job.width, job.height, k * frame)
-            val f = ImageOps.composite(image, mask, job, gen, p.blend, p.colorMatch)
-            gen.recycle()
-            f
+        var made = 0
+        try {
+            for (k in 0 until p.count) {
+                if (k > 0 && (stopRequested || queueStop)) break
+                statusPrefix = prefix + if (p.count > 1) "Image ${k + 1}/${p.count} · " else ""
+                if (loadedBackend != "cpu") markGpuInFlight(true)
+                val out = try {
+                    SdNative.inpaint(job.rgb, job.mask, job.width, job.height, p.prompt, p.negative,
+                        p.steps, p.cfg, p.strength, p.seed + k, p.sampler, p.scheduler, p.clipSkip, p.tiling, 1,
+                        loraFile?.absolutePath, loraStrength())
+                } catch (t: Throwable) {
+                    markGpuInFlight(false)
+                    if (made > 0 && stopRequested) break   // cancelled after some were finished: keep those
+                    throw t
+                }
+                markGpuInFlight(false)
+                val gen = ImageOps.fromRgb(out, job.width, job.height)
+                val f = ImageOps.composite(image, mask, job, gen, p.blend, p.colorMatch)
+                gen.recycle()
+                onImage(k, f)
+                made++
+            }
+        } finally {
+            statusPrefix = prefix
         }
+        return made
     }
 
     private fun generate() {
@@ -1241,20 +1260,25 @@ class MainActivity : Activity() {
 
         thread(name = "sd-gen") {
             try {
-                val finals = inpaintCore(image, maskCopy, p)
-                val n = finals.size
+                val n = inpaintCore(image, maskCopy, p) { k, f ->
+                    // Show and save each image the moment it is finished.
+                    ui.post {
+                        if (k == 0) clearResults()
+                        results += f
+                        resultSeeds += p.seed + k
+                        autoSaveIfHidden(listOf(f))
+                        if (k == 0) showResultAt(0) else updateUi()
+                    }
+                }
                 val secs = (System.currentTimeMillis() - started) / 1000.0
                 ui.post {
-                    clearResults()
-                    results += finals
-                    autoSaveIfHidden(finals)
-                    resultSeeds += (0 until n).map { p.seed + it }
+                    statusPrefix = ""
                     setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
-                    showResultAt(0)
+                    if (results.isNotEmpty() && !canvas.showResult) showResultAt(resultIndex)
                 }
             } catch (t: Throwable) {
                 markGpuInFlight(false)
-                ui.post { setBusy(false, "Failed: ${t.message}"); pollNative(); gpuFailureHint() }
+                ui.post { statusPrefix = ""; setBusy(false, "Failed: ${t.message}"); pollNative(); gpuFailureHint() }
             } finally {
                 maskCopy.recycle()
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
@@ -1641,8 +1665,10 @@ class MainActivity : Activity() {
                         ?: throw IllegalStateException("queued mask is missing")
                     mask = maskArgb.extractAlpha()
                     maskArgb.recycle()
-                    val finals = inpaintCore(image, mask, item.params)
-                    for (f in finals) { try { writePng(f); saved++ } catch (_: Throwable) { }; f.recycle() }
+                    inpaintCore(image, mask, item.params, "Photo ${i + 1}/${items.size} · ") { _, f ->
+                        try { writePng(f); saved++ } catch (_: Throwable) { }
+                        f.recycle()
+                    }
                     done++
                     imgFile.delete(); maskFile.delete()
                     ui.post { queue.removeAll { it.id == item.id }; updateUi() }
@@ -1845,35 +1871,49 @@ class MainActivity : Activity() {
                     appendLog((if (textMode) "Text to image" else "Img2Img (denoise $strength)") +
                         " $count× ${w}×$h, style ${style.label}, seeds $seed–${seed + count - 1}\n  " + settingsLine())
                 }
-                if (loadedBackend != "cpu") markGpuInFlight(true)
-                val out = SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg,
-                    if (textMode) 1f else strength, seed,
-                    sampler, scheduler, clipSkip, tiling, count, loraFile?.absolutePath, loraStrength())
-                markGpuInFlight(false)
-                val frame = w * h * 3
-                val n = out.size / frame
-                var imgs = (0 until n).map { ImageOps.fromRgb(out, w, h, it * frame) }
-                if (sharpen) {
-                    imgs = imgs.mapIndexed { k, img ->
-                        val better = sharpenFaces(img, k + 1, n, prompt, negative, steps, cfg, seed + k,
+                var made = 0
+                for (k in 0 until count) {
+                    if (k > 0 && stopRequested) break
+                    statusPrefix = if (count > 1) "Image ${k + 1}/$count · " else ""
+                    if (loadedBackend != "cpu") markGpuInFlight(true)
+                    val out = try {
+                        SdNative.inpaint(rgb, fullMask, w, h, prompt, negative, steps, cfg,
+                            if (textMode) 1f else strength, seed + k,
+                            sampler, scheduler, clipSkip, tiling, 1, loraFile?.absolutePath, loraStrength())
+                    } catch (t: Throwable) {
+                        markGpuInFlight(false)
+                        if (made > 0 && stopRequested) break   // cancelled after some were finished: keep those
+                        throw t
+                    }
+                    markGpuInFlight(false)
+                    var img = ImageOps.fromRgb(out, w, h)
+                    if (sharpen && !stopRequested) {
+                        val better = sharpenFaces(img, k + 1, count, prompt, negative, steps, cfg, seed + k,
                             sampler, scheduler, clipSkip, tiling)
                         if (better !== img) img.recycle()
-                        better
+                        img = better
                     }
-                    statusPrefix = ""
+                    val finished = img
+                    val first = made == 0
+                    // Show and save each image the moment it is finished.
+                    ui.post {
+                        if (first) clearCreateResults()
+                        createResults += finished
+                        createSeeds += seed + k
+                        autoSaveIfHidden(listOf(finished))
+                        if (first) showResultAt(0) else updateUi()
+                    }
+                    made++
                 }
+                statusPrefix = ""
+                val n = made
                 val secs = (System.currentTimeMillis() - started) / 1000.0
                 ui.post {
-                    clearCreateResults()
-                    createResults += imgs
-                    autoSaveIfHidden(imgs)
-                    createSeeds += (0 until n).map { seed + it }
                     setBusy(false, "Done: $n image${if (n == 1) "" else "s"} in ${"%.0f".format(secs)}s")
-                    showResultAt(0)
                 }
             } catch (t: Throwable) {
                 markGpuInFlight(false)
-                ui.post { setBusy(false, "Failed: ${t.message}"); pollNative(); gpuFailureHint() }
+                ui.post { statusPrefix = ""; setBusy(false, "Failed: ${t.message}"); pollNative(); gpuFailureHint() }
             } finally {
                 ui.post { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
             }
