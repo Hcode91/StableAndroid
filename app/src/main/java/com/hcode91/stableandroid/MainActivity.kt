@@ -302,7 +302,7 @@ class MainActivity : Activity() {
     }
 
     private fun setupListeners() {
-        findViewById<Button>(R.id.btnImage).setOnClickListener { pickImage(REQ_IMAGE) }
+        findViewById<Button>(R.id.btnImage).setOnClickListener { if (!restoringBlocks()) pickImage(REQ_IMAGE) }
         btnBrush.setOnClickListener {
             canvas.erasing = !canvas.erasing
             btnBrush.text = if (canvas.erasing) "Eraser" else "Brush"
@@ -312,7 +312,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnInvert).setOnClickListener { canvas.invertMask() }
         findViewById<Button>(R.id.btnFit).setOnClickListener { canvas.resetView() }
         btnToggle.setOnClickListener {
-            if (canvas.result != null) {
+            if (canvas.result != null && !restoringBlocks()) {
                 canvas.showResult = !canvas.showResult
                 updateUi()
             }
@@ -367,6 +367,7 @@ class MainActivity : Activity() {
         findViewById<Button>(R.id.btnStylePhoto).setOnClickListener { pickImage(REQ_STYLE_IMAGE) }
         btnSave.setOnClickListener { saveResult() }
         btnUseResult.setOnClickListener {
+            if (restoringBlocks()) return@setOnClickListener
             if (mode != 0) {
                 val bmp = createResults.getOrNull(createIndex) ?: return@setOnClickListener
                 val copy = bmp.copy(Bitmap.Config.ARGB_8888, true)
@@ -392,6 +393,7 @@ class MainActivity : Activity() {
         }
         findViewById<Button>(R.id.btnChooseModel).setOnClickListener { pickModel() }
         btnLoadModel.setOnClickListener { loadModel() }
+        findViewById<Button>(R.id.btnRestore).setOnClickListener { toggleRestore() }
         findViewById<Button>(R.id.btnCheckpoints).setOnClickListener { if (!busy) showCheckpoints() }
         findViewById<Button>(R.id.btnPresets).setOnClickListener { if (!busy) showPresets() }
         findViewById<Button>(R.id.btnDescribe).setOnClickListener { if (!busy) startDescribe() }
@@ -571,6 +573,16 @@ class MainActivity : Activity() {
             REQ_LORA -> importLora(uri)
             REQ_DRIVER -> installDriver(uri)
             REQ_MOTION -> importMotion(uri)
+            REQ_RESTORE_EDITED -> {
+                pendingRestoreEdited = uri
+                toast("Now choose the original photo it was made from")
+                pickImage(REQ_RESTORE_ORIGINAL)
+            }
+            REQ_RESTORE_ORIGINAL -> {
+                val edited = pendingRestoreEdited
+                pendingRestoreEdited = null
+                if (edited != null) restoreFromFiles(edited, uri)
+            }
             REQ_MODEL_FOLDER -> {
                 try {
                     contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -653,6 +665,11 @@ class MainActivity : Activity() {
             try {
                 val bmp = ImageOps.load(contentResolver, uri)
                 ui.post {
+                    // A new photo ends any restore in progress before its bitmaps are released.
+                    if (canvas.restoring) {
+                        canvas.finishRestore()?.recycle()
+                        restoreOrigTemp?.recycle(); restoreOrigTemp = null
+                    }
                     clearResults()
                     canvas.setImage(bmp)
                     txtStatus.text = "Image ${bmp.width}×${bmp.height}. Paint over the area to change."
@@ -1198,6 +1215,7 @@ class MainActivity : Activity() {
     }
 
     private fun generate() {
+        if (restoringBlocks()) return
         if (mode == 3) { createVideo(); return }
         if (mode != 0) { create(); return }
         if (busy) return
@@ -1386,6 +1404,155 @@ class MainActivity : Activity() {
         }
     }
 
+    // ---------------------------------------------------------------- restore-original brush
+
+    /** A scaled copy of the source photo made for an Img2Img restore; recycled when it ends. */
+    private var restoreOrigTemp: Bitmap? = null
+
+    /** True (with a hint) while the restore brush is active, so other actions wait for Done. */
+    private fun restoringBlocks(): Boolean {
+        if (!canvas.restoring) return false
+        toast("Tap Done restoring first")
+        return true
+    }
+
+    private fun toggleRestore() {
+        if (busy) return
+        if (canvas.restoring) { finishRestore(); return }
+        val hasCurrent = (mode == 0 && results.isNotEmpty()) ||
+            (mode == 1 && createResults.isNotEmpty() && stylizeSource != null)
+        val options = mutableListOf<String>()
+        if (hasCurrent) options += "The result on screen"
+        options += "An image I saved earlier…"
+        android.app.AlertDialog.Builder(this)
+            .setTitle("Restore the original into…")
+            .setItems(options.toTypedArray()) { _, which ->
+                if (options[which].startsWith("The result")) restoreCurrent()
+                else {
+                    toast("First choose the edited image")
+                    pickImage(REQ_RESTORE_EDITED)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun restoreCurrent() {
+        when (mode) {
+            0 -> {
+                val base = results.getOrNull(resultIndex) ?: return
+                val orig = canvas.image ?: return
+                if (!canvas.startRestore(base, orig)) { toast("The result and the photo are different sizes"); return }
+                restoreStarted()
+            }
+            1 -> {
+                val res = createResults.getOrNull(createIndex) ?: return
+                val src = stylizeSource ?: return
+                beginRestoreWith(res.copy(Bitmap.Config.ARGB_8888, false), src.copy(Bitmap.Config.ARGB_8888, false),
+                    createSeeds.getOrNull(createIndex) ?: -1L)
+            }
+        }
+    }
+
+    private var pendingRestoreEdited: Uri? = null
+
+    /** Second step of "an image I saved earlier": both pictures are chosen, load and line them up. */
+    private fun restoreFromFiles(edited: Uri, original: Uri) {
+        setBusy(true, "Opening the two images…")
+        thread {
+            try {
+                val e = ImageOps.load(contentResolver, edited)
+                val o = ImageOps.load(contentResolver, original)
+                // The two must be the same picture: the original is fitted exactly over the edit,
+                // with no moving or resizing, so their shapes have to match.
+                val ra = e.width.toFloat() / e.height
+                val rb = o.width.toFloat() / o.height
+                if (kotlin.math.abs(ra - rb) / ra > 0.03f) {
+                    e.recycle(); o.recycle()
+                    throw IllegalStateException("those two images are different shapes, so they aren't an edit and its " +
+                        "original (${e.width}×${e.height} and ${o.width}×${o.height})")
+                }
+                ui.post {
+                    setBusy(false, "Images opened")
+                    beginRestoreWith(e, o, -1L)
+                }
+            } catch (t: Throwable) {
+                ui.post { setBusy(false, "Couldn't start restoring: ${t.message}") }
+            }
+        }
+    }
+
+    /**
+     * Starts the restore brush in the Inpaint tab with [edited] as the picture and [original]
+     * fitted over it. Works at the larger of the two sizes, so restored parts keep the
+     * original's full detail. Takes ownership of both bitmaps.
+     */
+    private fun beginRestoreWith(edited: Bitmap, original: Bitmap, seed: Long) {
+        val useOrigSize = original.width.toLong() * original.height > edited.width.toLong() * edited.height
+        val w = if (useOrigSize) original.width else edited.width
+        val h = if (useOrigSize) original.height else edited.height
+        fun fit(b: Bitmap): Bitmap {
+            if (b.width == w && b.height == h) {
+                if (b.isMutable) return b
+                val m = b.copy(Bitmap.Config.ARGB_8888, true)
+                b.recycle()
+                return m
+            }
+            val s = Bitmap.createScaledBitmap(b, w, h, true)
+            if (s !== b) b.recycle()
+            return s
+        }
+        val base = fit(edited)
+        val orig = fit(original)
+        if (mode != 0) switchMode(0)
+        if (mode != 0) { base.recycle(); orig.recycle(); return }
+        clearResults()
+        canvas.setImage(base)
+        results += base.copy(Bitmap.Config.ARGB_8888, false)
+        resultSeeds += seed
+        resultIndex = 0
+        restoreOrigTemp = orig
+        if (!canvas.startRestore(base, orig)) { orig.recycle(); restoreOrigTemp = null; toast("Couldn't line the two images up"); return }
+        restoreStarted()
+    }
+
+    private fun restoreStarted() {
+        btnBrush.text = "Brush"
+        txtStatus.text = "Paint where the original should come back. Two fingers to zoom. Tap Done restoring when finished."
+        updateUi()
+    }
+
+    private fun finishRestore() {
+        val out = canvas.finishRestore()
+        restoreOrigTemp?.recycle(); restoreOrigTemp = null
+        btnBrush.text = "Brush"
+        if (out == null) {
+            txtStatus.text = "Nothing was restored"
+            if (results.isNotEmpty()) showResultAt(resultIndex) else updateUi()
+            return
+        }
+        val i = resultIndex.coerceIn(0, maxOf(0, results.size - 1))
+        if (results.isEmpty()) { results += out; resultSeeds += -1L } else {
+            val old = results[i]
+            results[i] = out
+            canvas.result = out
+            old.recycle()
+        }
+        autoSaved = false
+        txtStatus.text = "Original restored where you painted"
+        showResultAt(i)
+        if (findViewById<CheckBox>(R.id.chkAutoSave).isChecked) {
+            val copy = out.copy(Bitmap.Config.ARGB_8888, false)
+            thread {
+                val ok = try { writePng(copy); true } catch (_: Throwable) { false }
+                copy.recycle()
+                ui.post {
+                    if (ok) { autoSaved = true; appendLog("Saved the restored image to Pictures/StableAndroid"); updateUi() }
+                }
+            }
+        }
+    }
+
     // ---------------------------------------------------------------- inpaint queue
 
     private class QueueItem(val id: Int, val name: String, val params: InpaintParams)
@@ -1398,7 +1565,7 @@ class MainActivity : Activity() {
 
     /** Stores the open photo, its mask and the current settings as one queued job. */
     private fun addToQueue() {
-        if (busy) return
+        if (busy || restoringBlocks()) return
         val image = canvas.image ?: run { toast("Open an image first"); return }
         val mask = canvas.mask ?: return
         if (!canvas.hasMask()) { toast("Paint a mask over the area to change first"); return }
@@ -1438,7 +1605,7 @@ class MainActivity : Activity() {
     }
 
     private fun runQueue() {
-        if (busy) return
+        if (busy || restoringBlocks()) return
         if (queue.isEmpty()) { toast("The queue is empty. Paint a mask and tap Add to queue."); return }
         if (loadedModelName == null) { toast("Load a model first"); return }
         if (!skipSettingsCheck && warnOnSettingsMismatch { runQueue() }) return
@@ -1512,6 +1679,7 @@ class MainActivity : Activity() {
         if (mode != 0) createResults.getOrNull(createIndex) else canvas.result
 
     private fun showResultAt(i: Int) {
+        if (canvas.restoring) return
         if (mode != 0) {
             if (createResults.isEmpty()) return
             createIndex = ((i % createResults.size) + createResults.size) % createResults.size
@@ -1552,6 +1720,7 @@ class MainActivity : Activity() {
 
     private fun switchMode(m: Int) {
         if (busy || m == mode) return
+        if (restoringBlocks()) return
         savePrefs()          // stores the current tab's prompts
         mode = m
         loadPromptsFor(m)
@@ -1813,6 +1982,7 @@ class MainActivity : Activity() {
     }
 
     private fun saveResult() {
+        if (restoringBlocks()) return
         if (mode == 3) { saveVideoGif(); return }
         val bmp = currentResult() ?: return
         thread {
@@ -1915,6 +2085,11 @@ class MainActivity : Activity() {
         if (mode == 2) canvas.previewHint = "Type a prompt and tap Create"
         btnCancel.isEnabled = busy && loaded
         btnLoadModel.isEnabled = !busy && modelFile != null
+        findViewById<Button>(R.id.btnRestore).apply {
+            visibility = if (mode == 0 || mode == 1) View.VISIBLE else View.GONE
+            isEnabled = !busy
+            text = if (canvas.restoring) "Done restoring" else "Restore original (paint it back)"
+        }
         findViewById<TextView>(R.id.txtDescribe).text = Describer.missing(this).let { m ->
             when (m.size) {
                 0 -> "Describe model: ready (Florence-2)"
@@ -2097,5 +2272,7 @@ class MainActivity : Activity() {
         private const val REQ_DESCRIBE_IMAGE = 7
         private const val REQ_MODEL_FOLDER = 8
         private const val REQ_MOTION = 9
+        private const val REQ_RESTORE_EDITED = 10
+        private const val REQ_RESTORE_ORIGINAL = 11
     }
 }

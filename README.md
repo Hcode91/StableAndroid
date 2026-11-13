@@ -36,6 +36,13 @@ tap **Generate**. **Denoise** controls how far it moves from the photo: ~0.45 st
 changes a lot. Press and hold a result to compare with the original; **Edit in Inpaint** sends it
 to the Inpaint tab.
 
+### Restore original
+
+After an inpaint (or an Img2Img run), **Restore original (paint it back)** lets you paint over
+parts of the result to bring back the untouched pixels of the photo it was made from, with a
+soft-edged brush, the eraser and undo. Tap **Done restoring** to apply. It also works on an image saved earlier: choose the edited image, then the original it was made from (the two must be the same shape; the original is fitted over the edit automatically). Useful when an edit has
+softened a face or detail you wanted to keep.
+
 ### Inpaint queue
 
 To inpaint several photos unattended: open a photo, paint its mask, set the prompt and tap

@@ -117,6 +117,7 @@ class MaskCanvasView @JvmOverloads constructor(
         set(value) { field = value; invalidate() }
 
     fun setImage(bmp: Bitmap, keepMask: Boolean = false) {
+        if (restoring) finishRestore()?.recycle()   // a new image ends any restore in progress
         val old = mask
         image = bmp
         val newMask = Bitmap.createBitmap(bmp.width, bmp.height, Bitmap.Config.ALPHA_8)
@@ -139,14 +140,70 @@ class MaskCanvasView @JvmOverloads constructor(
         return bounds != null
     }
 
+    // ------------------------------------------------------------ restore-original brush
+
+    /** True while the user is painting the original back over an edited image. */
+    var restoring = false
+        private set
+    private var restoreBase: Bitmap? = null
+    private var restoreOrig: Bitmap? = null
+    private var restoreMask: Bitmap? = null
+    private var restoreCanvas: Canvas? = null
+    private val dstInPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply {
+        xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+    }
+
+    /** The bitmap and canvas the brush currently paints into (inpaint mask or restore mask). */
+    private fun targetMask(): Bitmap? = if (restoring) restoreMask else mask
+    private fun targetCanvas(): Canvas? = if (restoring) restoreCanvas else maskCanvas
+
+    /**
+     * Starts painting [original] back over [base]. Both must be the size of the open image.
+     * The view keeps references; the caller must not recycle them until restore ends.
+     */
+    fun startRestore(base: Bitmap, original: Bitmap): Boolean {
+        val img = image ?: return false
+        if (base.width != img.width || base.height != img.height ||
+            original.width != base.width || original.height != base.height) return false
+        val m = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ALPHA_8)
+        restoreBase = base; restoreOrig = original
+        restoreMask = m; restoreCanvas = Canvas(m)
+        undoStack.forEach { it.recycle() }; undoStack.clear()
+        erasing = false
+        restoring = true
+        invalidate()
+        return true
+    }
+
+    /** Ends restore mode and returns the combined image, or null if nothing was painted. */
+    fun finishRestore(): Bitmap? {
+        val base = restoreBase; val orig = restoreOrig; val m = restoreMask
+        var out: Bitmap? = null
+        if (base != null && orig != null && m != null && ImageOps.maskBounds(m) != null) {
+            out = base.copy(Bitmap.Config.ARGB_8888, true)
+            val c = Canvas(out)
+            val layer = c.saveLayer(null, null)
+            c.drawBitmap(orig, 0f, 0f, null)
+            c.drawBitmap(m, 0f, 0f, dstInPaint)
+            c.restoreToCount(layer)
+        }
+        restoring = false
+        restoreMask?.recycle()
+        restoreBase = null; restoreOrig = null; restoreMask = null; restoreCanvas = null
+        undoStack.forEach { it.recycle() }; undoStack.clear()
+        erasing = false
+        invalidate()
+        return out
+    }
+
     fun clearMask() {
         pushUndo()
-        mask?.eraseColor(Color.TRANSPARENT)
+        targetMask()?.eraseColor(Color.TRANSPARENT)
         invalidate(); onMaskChanged?.invoke()
     }
 
     fun invertMask() {
-        val m = mask ?: return
+        val m = targetMask() ?: return
         pushUndo()
         val inv = ImageOps.invertMask(m)
         Canvas(m).apply {
@@ -158,7 +215,7 @@ class MaskCanvasView @JvmOverloads constructor(
     }
 
     fun undo() {
-        val m = mask ?: return
+        val m = targetMask() ?: return
         val prev = undoStack.removeLastOrNull() ?: return
         Canvas(m).apply {
             drawColor(Color.TRANSPARENT, PorterDuff.Mode.CLEAR)
@@ -174,7 +231,7 @@ class MaskCanvasView @JvmOverloads constructor(
     }
 
     private fun pushUndo() {
-        val m = mask ?: return
+        val m = targetMask() ?: return
         undoStack.addLast(m.copy(Bitmap.Config.ALPHA_8, false))
         while (undoStack.size > maxUndo) undoStack.removeFirst().recycle()
     }
@@ -226,6 +283,22 @@ class MaskCanvasView @JvmOverloads constructor(
             canvas.drawText("Tap “Image” to open a picture", width / 2f, height / 2f, hintPaint)
             return
         }
+        if (restoring) {
+            // Edited image underneath; the original shows through wherever the user has painted.
+            restoreBase?.let { canvas.drawBitmap(it, viewMatrix, bitmapPaint) }
+            val o = restoreOrig; val m = restoreMask
+            if (o != null && m != null) {
+                val layer = canvas.saveLayer(null, null)
+                canvas.drawBitmap(o, viewMatrix, bitmapPaint)
+                canvas.drawBitmap(m, viewMatrix, dstInPaint)
+                canvas.restoreToCount(layer)
+            }
+            if (cursorX >= 0) {
+                brushOutline.color = if (erasing) Color.CYAN else Color.GREEN
+                canvas.drawCircle(cursorX, cursorY, brushSizePx / 2f, brushOutline)
+            }
+            return
+        }
         val shown = if (showResult && result != null) result!! else img
         canvas.drawBitmap(shown, viewMatrix, bitmapPaint)
         if (!showResult) {
@@ -241,7 +314,7 @@ class MaskCanvasView @JvmOverloads constructor(
         if (previewMode) {
             if (preview == null) return false
         } else if (image == null) return false
-        if (showResult || previewMode) {
+        if ((showResult || previewMode) && !restoring) {
             when (event.actionMasked) {
                 MotionEvent.ACTION_DOWN -> {
                     swipeStartX = event.x; swipeStartY = event.y
@@ -334,6 +407,10 @@ class MaskCanvasView @JvmOverloads constructor(
     private fun configureStrokePaint() {
         strokePaint.strokeWidth = max(1f, brushSizePx / currentScale())
         strokePaint.xfermode = if (erasing) clearMode else null
+        // The restore brush has a soft edge so the original blends into the edit.
+        strokePaint.maskFilter = if (restoring)
+            android.graphics.BlurMaskFilter(max(1f, strokePaint.strokeWidth * 0.3f), android.graphics.BlurMaskFilter.Blur.NORMAL)
+        else null
     }
 
     private fun startStroke(x: Float, y: Float) {
@@ -343,7 +420,7 @@ class MaskCanvasView @JvmOverloads constructor(
         lastImgX = p[0]; lastImgY = p[1]
         // a dot for single taps
         val dot = Paint(strokePaint).apply { style = Paint.Style.FILL }
-        maskCanvas?.drawCircle(p[0], p[1], strokePaint.strokeWidth / 2f, dot)
+        targetCanvas()?.drawCircle(p[0], p[1], strokePaint.strokeWidth / 2f, dot)
         cursorX = x; cursorY = y
         invalidate()
     }
@@ -353,7 +430,7 @@ class MaskCanvasView @JvmOverloads constructor(
         strokePath.reset()
         strokePath.moveTo(lastImgX, lastImgY)
         strokePath.lineTo(p[0], p[1])
-        maskCanvas?.drawPath(strokePath, strokePaint)
+        targetCanvas()?.drawPath(strokePath, strokePaint)
         lastImgX = p[0]; lastImgY = p[1]
         cursorX = x; cursorY = y
         invalidate()
